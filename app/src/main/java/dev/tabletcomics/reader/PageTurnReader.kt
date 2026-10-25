@@ -63,6 +63,7 @@ fun PageTurnReader(
     onTurn: (target: ReaderUnit) -> Unit,
     onToggleControls: () -> Unit,
     onEndReached: () -> Unit,
+    showZoomReset: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
@@ -278,7 +279,7 @@ fun PageTurnReader(
                 PageTurnStyle.PAPER_CURL -> drawCurl(drawnCurrent, target, drag, turnWidth)
             }
         }
-        if (zoomTransform.scale > 1.01f) {
+        if (zoomTransform.scale > 1.01f && showZoomReset) {
             Surface(Modifier.align(Alignment.TopEnd).padding(14.dp), color = Color(0xB811151E),
                 shape = RoundedCornerShape(50)) {
                 TextButton(onClick = ::resetZoom) { Text("Reset zoom") }

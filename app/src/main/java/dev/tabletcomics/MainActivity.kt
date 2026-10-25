@@ -92,7 +92,7 @@ private val archiveIoLock = Mutex()
 private val coverCache = object : android.util.LruCache<String, Bitmap>(8 * 1024 * 1024) {
     override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
 }
-private data class Book(
+internal data class Book(
     val uri: Uri,
     val title: String,
     val format: String,
@@ -100,11 +100,11 @@ private data class Book(
     val lastModified: Long = 0L,
     val folderPath: String = "",
 )
-private data class LibraryShelfCollection(
+internal data class LibraryShelfCollection(
     val key: String,
     val name: String,
     val issueCount: Int,
-    val cover: Book,
+    val cover: Book?,
     val folderPath: String? = null,
     val customName: String? = null,
 )
@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun ComicApp() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("reader", 0) }
@@ -168,7 +169,6 @@ private fun ComicApp() {
     var accentName by remember { mutableStateOf(prefs.getString("accent", "violet") ?: "violet") }
     var showReaderProgress by remember { mutableStateOf(prefs.getBoolean("showReaderProgress", false)) }
     var keepScreenAwake by remember { mutableStateOf(prefs.getBoolean("keepScreenAwake", true)) }
-    var settingsDialog by remember { mutableStateOf(false) }
     var detailBook by remember { mutableStateOf<Book?>(null) }
     var newCollectionName by remember { mutableStateOf("") }
     var finishDialog by remember { mutableStateOf(false) }
@@ -176,6 +176,9 @@ private fun ComicApp() {
     var showPageThumbnails by remember { mutableStateOf(false) }
     var pageThumbnails by remember { mutableStateOf<Map<Int, Bitmap>>(emptyMap()) }
     var showBookmarks by remember { mutableStateOf(false) }
+    var readerOptionsVisible by remember { mutableStateOf(false) }
+    var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
+    var readerReturnDestination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
     var bookmarks by remember { mutableStateOf<List<PageBookmark>>(emptyList()) }
     var currentIsBookmarked by remember { mutableStateOf(false) }
     val config = LocalConfiguration.current
@@ -216,6 +219,7 @@ private fun ComicApp() {
         session.close()
         activeReaderState.value = activeReaderState.value.clearActiveBook()
         controlsVisible = false
+        destination = readerReturnDestination
     }
 
     fun openBook(book: Book, fromBeginning: Boolean = false, restoredPageIndex: Int? = null) {
@@ -237,6 +241,11 @@ private fun ComicApp() {
             prefs.edit().remove("position:${book.uri}").remove("pages:${book.uri}").apply()
             libraryEntries = repository.entries()
         }
+    }
+
+    fun startReading(book: Book, fromBeginning: Boolean = false) {
+        readerReturnDestination = destination
+        openBook(book, fromBeginning = fromBeginning)
     }
 
     fun turn(forward: Boolean) {
@@ -335,7 +344,15 @@ private fun ComicApp() {
     }
     LaunchedEffect(spreadMode, rightToLeft) { if (currentBook != null) session.reconfigure(spreadMode, rightToLeft) }
     DisposableEffect(session) { onDispose { session.dispose() } }
-    BackHandler(enabled = currentBook != null) { closeBook() }
+    BackHandler(enabled = currentBook != null) {
+        when {
+            readerOptionsVisible -> readerOptionsVisible = false
+            showBookmarks -> showBookmarks = false
+            showPageThumbnails -> showPageThumbnails = false
+            controlsVisible -> controlsVisible = false
+            else -> closeBook()
+        }
+    }
     LaunchedEffect(currentBook, controlsVisible) {
         val window = (context as? android.app.Activity)?.window ?: return@LaunchedEffect
         val controller = WindowCompat.getInsetsController(window, window.decorView)
@@ -397,8 +414,7 @@ private fun ComicApp() {
             customCollections.forEach { name ->
                 val group = filterAndSortLibrary(catalogEntries.filter { name in it.customCollections },
                     "", LibraryFilter.ALL, LibrarySort.TITLE)
-                val first = group.firstOrNull() ?: return@forEach
-                val cover = booksByUri[first.uri] ?: return@forEach
+                val cover = group.firstOrNull()?.let { booksByUri[it.uri] }
                 add(LibraryShelfCollection("custom:$name", name, group.size, cover, customName = name))
             }
         }
@@ -412,141 +428,69 @@ private fun ComicApp() {
         nextIssueInNaturalOrder(group, active.uri)
     }
     val nextIssueBook = nextIssueEntry?.let { booksByUri[it.uri] }
+    val featuredEntry = remember(catalogEntries) {
+        catalogEntries.filter { !it.finished && it.pageIndex >= 0 }.maxByOrNull { it.lastReadAt }
+            ?: catalogEntries.filter { !it.finished }.maxByOrNull { it.addedAt }
+            ?: catalogEntries.maxByOrNull { it.lastReadAt }
+    }
+    val featuredBook = featuredEntry?.let { booksByUri[it.uri] }
+    val otherReads = remember(catalogEntries, booksByUri, featuredEntry) {
+        catalogEntries.filter { !it.finished && it.pageIndex >= 0 && it.uri != featuredEntry?.uri }
+            .sortedByDescending { it.lastReadAt }.take(8).mapNotNull { entry -> booksByUri[entry.uri]?.let { it to entry } }
+    }
+    var sortOptionsVisible by remember { mutableStateOf(false) }
+    var createCollectionVisible by remember { mutableStateOf(false) }
+
     ComicsTheme(accentName) {
         if (currentBook == null) {
-            Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = {
-                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
-                    .padding(horizontal = 28.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Image(painterResource(R.drawable.ic_brand_logo), contentDescription = null,
-                        modifier = Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)))
-                    Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                        Text("Tablet Comics", style = MaterialTheme.typography.titleLarge)
-                        Text("YOUR PERSONAL COMIC LIBRARY", style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
-                    }
-                    TextButton(onClick = { licenseDialog = true }) { Text("About") }
-                    TextButton(onClick = { settingsDialog = true }) { Text("Settings") }
-                    if (folder != null) TextButton(onClick = { folder?.let(::scan) }) { Text("Refresh") }
-                    Button(onClick = { picker.launch(null) }, shape = RoundedCornerShape(14.dp)) {
-                        Text(if (folder == null) "Choose library" else "Change folder")
-                    }
-                }
-            }) { insets ->
-                Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(insets)) {
-                    if (libraryLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    libraryMessage?.let { Text(it, Modifier.padding(horizontal = 28.dp, vertical = 8.dp)) }
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            label = { Text("Search your library") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(16.dp),
-                        )
-                        var sortMenu by remember { mutableStateOf(false) }
-                        Box {
-                            OutlinedButton(onClick = { sortMenu = true }, modifier = Modifier.padding(start = 12.dp),
-                                shape = RoundedCornerShape(14.dp)) { Text("Sort · ${sort.label}") }
-                            DropdownMenu(sortMenu, onDismissRequest = { sortMenu = false }) {
-                                LibrarySort.entries.forEach { option ->
-                                    DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortMenu = false })
-                                }
+            val wideLayout = LocalConfiguration.current.screenWidthDp >= 840
+            Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                if (wideLayout) {
+                    Row(Modifier.fillMaxSize()) {
+                        NavigationRail(containerColor = MaterialTheme.colorScheme.background, header = {
+                            Image(painterResource(R.drawable.ic_brand_logo), contentDescription = "Tablet Comics", modifier = Modifier.padding(vertical = 20.dp).size(42.dp))
+                        }) {
+                            AppDestination.entries.forEach { item ->
+                                NavigationRailItem(selected = destination == item, onClick = { destination = item },
+                                    icon = { Text(when (item) { AppDestination.HOME -> "⌂"; AppDestination.LIBRARY -> "▤"; AppDestination.COLLECTIONS -> "▱"; AppDestination.SETTINGS -> "⚙" }, style = MaterialTheme.typography.titleLarge) },
+                                    label = { Text(item.label) }, alwaysShowLabel = true)
+                            }
+                        }
+                        Box(Modifier.weight(1f).fillMaxHeight()) {
+                            when (destination) {
+                                AppDestination.HOME -> ReadingHome(featuredBook, featuredEntry, otherReads, diskCoverCache,
+                                    libraryLoading, libraryMessage, books.isNotEmpty(), { startReading(it) }, { detailBook = it }, { picker.launch(null) })
+                                AppDestination.LIBRARY -> ComicLibraryScreen(shelfEntries.mapNotNull { entry -> booksByUri[entry.uri]?.let { it to entry } },
+                                    diskCoverCache, searchQuery, { searchQuery = it }, filter, { filter = it }, sort, { sortOptionsVisible = true },
+                                    coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it })
+                                AppDestination.COLLECTIONS -> CollectionsExperience(collectionShelves, diskCoverCache, { shelf ->
+                                    selectedFolderPath = shelf.folderPath; selectedCustomCollection = shelf.customName; destination = AppDestination.LIBRARY
+                                }, { createCollectionVisible = true })
+                                AppDestination.SETTINGS -> SettingsExperience(coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, accentName, { name -> accentName = name; prefs.edit().putString("accent", name).apply() },
+                                    showReaderProgress, { showReaderProgress = it; prefs.edit().putBoolean("showReaderProgress", it).apply() }, keepScreenAwake, { keepScreenAwake = it; prefs.edit().putBoolean("keepScreenAwake", it).apply() }, folder != null, { picker.launch(null) }, { folder?.let(::scan) }, { licenseDialog = true })
                             }
                         }
                     }
-                    LazyRow(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        items(LibraryFilter.entries) { option ->
-                            FilterChip(selected = filter == option, onClick = { filter = option }, label = { Text(option.label) })
-                        }
-                        item {
-                            var collectionMenu by remember { mutableStateOf(false) }
-                            Box {
-                                FilterChip(
-                                    selected = selectedFolderPath != null || selectedCustomCollection != null,
-                                    onClick = { collectionMenu = true },
-                                    label = { Text(selectedCustomCollection ?: selectedFolderPath?.substringAfterLast('/') ?: "All collections") },
-                                )
-                                DropdownMenu(collectionMenu, onDismissRequest = { collectionMenu = false }) {
-                                    DropdownMenuItem(text = { Text("All comics") }, onClick = {
-                                        selectedFolderPath = null; selectedCustomCollection = null; collectionMenu = false
-                                    })
-                                    folderPaths.forEach { path ->
-                                        DropdownMenuItem(text = { Text("Folder · ${path.substringAfterLast('/')}") }, onClick = {
-                                            selectedFolderPath = path; selectedCustomCollection = null; collectionMenu = false
-                                        })
-                                    }
-                                    customCollections.forEach { name ->
-                                        DropdownMenuItem(text = { Text("Collection · $name") }, onClick = {
-                                            selectedFolderPath = null; selectedCustomCollection = name; collectionMenu = false
-                                        })
-                                    }
-                                }
-                            }
+                } else {
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        when (destination) {
+                            AppDestination.HOME -> ReadingHome(featuredBook, featuredEntry, otherReads, diskCoverCache,
+                                libraryLoading, libraryMessage, books.isNotEmpty(), { startReading(it) }, { detailBook = it }, { picker.launch(null) })
+                            AppDestination.LIBRARY -> ComicLibraryScreen(shelfEntries.mapNotNull { entry -> booksByUri[entry.uri]?.let { it to entry } },
+                                diskCoverCache, searchQuery, { searchQuery = it }, filter, { filter = it }, sort, { sortOptionsVisible = true },
+                                coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it })
+                            AppDestination.COLLECTIONS -> CollectionsExperience(collectionShelves, diskCoverCache, { shelf ->
+                                selectedFolderPath = shelf.folderPath; selectedCustomCollection = shelf.customName; destination = AppDestination.LIBRARY
+                            }, { createCollectionVisible = true })
+                            AppDestination.SETTINGS -> SettingsExperience(coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, accentName, { name -> accentName = name; prefs.edit().putString("accent", name).apply() },
+                                showReaderProgress, { showReaderProgress = it; prefs.edit().putBoolean("showReaderProgress", it).apply() }, keepScreenAwake, { keepScreenAwake = it; prefs.edit().putBoolean("keepScreenAwake", it).apply() }, folder != null, { picker.launch(null) }, { folder?.let(::scan) }, { licenseDialog = true })
                         }
                     }
-                    if (folder == null) {
-                        Surface(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 16.dp),
-                            color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(22.dp)) {
-                            Row(Modifier.padding(22.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text("Build your bookshelf", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                                Text("Choose a folder containing CBZ, ZIP, CBR or RAR comics.",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = coverWidth.dp),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 28.dp, end = 28.dp, top = 18.dp, bottom = 32.dp),
-                        horizontalArrangement = Arrangement.spacedBy(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(20.dp),
-                    ) {
-                        if (continueEntries.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
-                            Column {
-                                LibrarySectionTitle("Continue reading", "Pick up where you left off")
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 6.dp)) {
-                                    items(continueEntries, key = { "continue:${it.uri}" }) { entry ->
-                                        val book = booksByUri[entry.uri] ?: return@items
-                                        ContinueReadingCard(book, entry, diskCoverCache, onClick = { openBook(book) })
-                                    }
-                                }
-                            }
-                        }
-                        if (collectionShelves.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
-                            Column {
-                                LibrarySectionTitle("Collections", "Your comics, grouped together")
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 6.dp)) {
-                                    items(collectionShelves, key = { it.key }) { shelf ->
-                                        val selected = (shelf.folderPath != null && selectedFolderPath == shelf.folderPath) ||
-                                            (shelf.customName != null && selectedCustomCollection == shelf.customName)
-                                        LibraryCollectionCard(shelf, selected, diskCoverCache) {
-                                            selectedFolderPath = shelf.folderPath
-                                            selectedCustomCollection = shelf.customName
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("Your bookshelf", style = MaterialTheme.typography.headlineSmall)
-                                    Text("${shelfEntries.size} ${if (shelfEntries.size == 1) "comic" else "comics"}",
-                                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                TextButton(onClick = { coverWidth = (coverWidth - 20).coerceAtLeast(120); prefs.edit().putInt("coverWidth", coverWidth).apply() }) { Text("−") }
-                                Text("Cover size", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                TextButton(onClick = { coverWidth = (coverWidth + 20).coerceAtMost(240); prefs.edit().putInt("coverWidth", coverWidth).apply() }) { Text("+") }
-                            }
-                        }
-                        if (shelfEntries.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
-                            Text(if (books.isEmpty()) "No comics here yet." else "No comics match these filters.", Modifier.padding(24.dp))
-                        }
-                        items(shelfEntries, key = { it.uri }) { entry ->
-                            val book = booksByUri[entry.uri] ?: return@items
-                            ComicCoverCard(book, entry, diskCoverCache,
-                                onClick = { openBook(book) }, onLongClick = { detailBook = book })
+                    NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                        AppDestination.entries.forEach { item ->
+                            NavigationBarItem(selected = destination == item, onClick = { destination = item },
+                                icon = { Text(when (item) { AppDestination.HOME -> "⌂"; AppDestination.LIBRARY -> "▤"; AppDestination.COLLECTIONS -> "▱"; AppDestination.SETTINGS -> "⚙" }) },
+                                label = { Text(item.label) }, alwaysShowLabel = true)
                         }
                     }
                 }
@@ -558,7 +502,8 @@ private fun ComicApp() {
                         layoutKey = "$landscape:$spreadMode:$rightToLeft",
                         onTurn = { target -> session.navigate(target.startIndex) },
                         onToggleControls = { controlsVisible = !controlsVisible },
-                        onEndReached = { finishDialog = true })
+                        onEndReached = { finishDialog = true },
+                        showZoomReset = controlsVisible)
                 }
                 if (session.loading && session.current == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
                 if (session.loading && session.current != null) {
@@ -600,98 +545,85 @@ private fun ComicApp() {
                                 Text("IMMERSIVE READER", style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            TextButton(onClick = { settingsDialog = true }) { Text("Settings") }
+                            TextButton(onClick = ::toggleBookmark) { Text(if (currentIsBookmarked) "★" else "☆") }
                         }
                     }
                 }
                 if (controlsVisible && session.current != null) {
-                    Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)
-                        .navigationBarsPadding(), color = Color(0xE6101218), shape = RoundedCornerShape(22.dp), shadowElevation = 12.dp) {
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val shownPage = session.requestedPageIndex ?: session.current!!.startIndex
-                            Text("${shownPage + 1}  /  ${session.totalPages}", Modifier.weight(1f),
-                                style = MaterialTheme.typography.titleSmall)
-                            Text("RTL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Switch(rightToLeft, onCheckedChange = {
-                                rightToLeft = it
-                                currentBook?.let { book -> prefs.edit().putBoolean("rtl:${book.uri}", it).apply() }
-                            })
-                            if (landscape) {
-                                Text("Spread", Modifier.padding(start = 12.dp), style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Switch(spreads, onCheckedChange = {
-                                    spreads = it
-                                    currentBook?.let { book -> prefs.edit().putBoolean("spreads:${book.uri}", it).apply() }
-                                })
-                            }
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedButton(onClick = { turn(rightToLeft) }, enabled = rightToLeft || session.previous != null,
-                                shape = RoundedCornerShape(14.dp)) {
-                                Text(if (rightToLeft) "Next" else "Previous")
-                            }
-                            Box {
-                                TextButton(onClick = { styleMenu = true }) { Text(style.label) }
-                                DropdownMenu(styleMenu, onDismissRequest = { styleMenu = false }) {
-                                    PageTurnStyle.entries.forEach { choice ->
-                                        DropdownMenuItem(text = { Text(choice.label) }, onClick = {
-                                            style = choice
-                                            currentBook?.let { book -> prefs.edit().putString("turnStyle:${book.uri}", choice.name).apply() }
-                                            styleMenu = false
-                                        })
-                                    }
-                                }
-                            }
-                            Button(onClick = { turn(!rightToLeft) }, enabled = !rightToLeft || session.previous != null,
-                                shape = RoundedCornerShape(14.dp)) {
-                                Text(if (rightToLeft) "Previous" else "Next")
-                            }
-                        }
-                        if (session.totalPages > 1) Slider(
-                            value = seekDraft.coerceIn(0f, (session.totalPages - 1).toFloat()),
-                            onValueChange = { seekDraft = it },
-                            onValueChangeFinished = {
-                                val destination = SeekState(draftIndex = seekDraft.roundToInt())
-                                    .destination(session.totalPages, spreadMode)
-                                seekDraft = destination.toFloat()
-                                session.navigate(destination)
-                            },
-                            valueRange = 0f..(session.totalPages - 1).toFloat(),
-                        )
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween) {
-                            TextButton(onClick = ::toggleBookmark) { Text(if (currentIsBookmarked) "★ Saved" else "☆ Bookmark") }
-                            TextButton(onClick = { showBookmarks = true }) { Text("Bookmarks (${bookmarks.size})") }
-                            TextButton(onClick = { showPageThumbnails = !showPageThumbnails }) {
-                                Text(if (showPageThumbnails) "Hide previews" else "Page previews")
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Keep awake", style = MaterialTheme.typography.labelSmall)
-                                Switch(keepScreenAwake, onCheckedChange = {
-                                    keepScreenAwake = it
-                                    prefs.edit().putBoolean("keepScreenAwake", it).apply()
-                                })
-                            }
-                        }
+                    Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally) {
                         if (showPageThumbnails) {
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            LazyRow(Modifier.fillMaxWidth().padding(bottom = 8.dp).background(Color(0xC9101218), RoundedCornerShape(16.dp)).padding(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 items(pageThumbnails.keys.sorted()) { pageIndex ->
-                                    Column(Modifier.width(68.dp).clickable { session.navigate(pageIndex) },
-                                        horizontalAlignment = Alignment.CenterHorizontally) {
-                                        pageThumbnails[pageIndex]?.let { bitmap ->
-                                            Image(bitmap.asImageBitmap(), contentDescription = "Page ${pageIndex + 1}",
-                                                Modifier.size(width = 58.dp, height = 78.dp), contentScale = ContentScale.Fit)
-                                        } ?: Surface(Modifier.size(width = 58.dp, height = 78.dp), color = MaterialTheme.colorScheme.surfaceVariant) {}
+                                    Column(Modifier.width(58.dp).clickable { session.navigate(pageIndex) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                                        pageThumbnails[pageIndex]?.let { bitmap -> Image(bitmap.asImageBitmap(), "Page ${pageIndex + 1}",
+                                            Modifier.size(50.dp, 68.dp), contentScale = ContentScale.Fit) }
+                                            ?: Surface(Modifier.size(50.dp, 68.dp), color = MaterialTheme.colorScheme.surfaceVariant) {}
                                         Text("${pageIndex + 1}", style = MaterialTheme.typography.labelSmall)
                                     }
                                 }
                             }
                         }
-                    }
+                        Surface(color = Color(0xE6101218), shape = RoundedCornerShape(22.dp), shadowElevation = 12.dp) {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { turn(rightToLeft) }, enabled = rightToLeft || session.previous != null) { Text("‹", style = MaterialTheme.typography.headlineSmall) }
+                                if (session.totalPages > 1) Slider(value = seekDraft.coerceIn(0f, (session.totalPages - 1).toFloat()),
+                                    onValueChange = { seekDraft = it }, onValueChangeFinished = {
+                                        val target = SeekState(draftIndex = seekDraft.roundToInt()).destination(session.totalPages, spreadMode)
+                                        seekDraft = target.toFloat(); session.navigate(target)
+                                    }, valueRange = 0f..(session.totalPages - 1).toFloat(), modifier = Modifier.weight(1f))
+                                val shownPage = session.requestedPageIndex ?: session.current!!.startIndex
+                                Text("${shownPage + 1}/${session.totalPages}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
+                                IconButton(onClick = { turn(!rightToLeft) }, enabled = !rightToLeft || session.previous != null) { Text("›", style = MaterialTheme.typography.headlineSmall) }
+                                TextButton(onClick = { showPageThumbnails = !showPageThumbnails }) { Text("Pages") }
+                                TextButton(onClick = { readerOptionsVisible = true }) { Text("Options") }
+                            }
+                        }
                     }
                 }
             }
+        }
+        if (readerOptionsVisible) {
+            AlertDialog(onDismissRequest = { readerOptionsVisible = false }, title = { Text("Reading options") },
+                text = { Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState())) {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Read right to left", Modifier.weight(1f)); Switch(rightToLeft, {
+                        rightToLeft = it; currentBook?.let { book -> prefs.edit().putBoolean("rtl:${book.uri}", it).apply() }
+                    }) }
+                    if (landscape) Row(verticalAlignment = Alignment.CenterVertically) { Text("Two-page spreads", Modifier.weight(1f)); Switch(spreads, {
+                        spreads = it; currentBook?.let { book -> prefs.edit().putBoolean("spreads:${book.uri}", it).apply() }
+                    }) }
+                    Text("Page turn", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+                    PageTurnStyle.entries.forEach { choice -> TextButton(onClick = {
+                        style = choice; currentBook?.let { book -> prefs.edit().putString("turnStyle:${book.uri}", choice.name).apply() }
+                    }, modifier = Modifier.fillMaxWidth()) { Text(if (style == choice) "✓  ${choice.label}" else choice.label) } }
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Keep screen awake", Modifier.weight(1f)); Switch(keepScreenAwake, {
+                        keepScreenAwake = it; prefs.edit().putBoolean("keepScreenAwake", it).apply()
+                    }) }
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Thin progress line", Modifier.weight(1f)); Switch(showReaderProgress, {
+                        showReaderProgress = it; prefs.edit().putBoolean("showReaderProgress", it).apply()
+                    }) }
+                    TextButton(onClick = { readerOptionsVisible = false; showBookmarks = true }) { Text("Bookmarks (${bookmarks.size})") }
+                    if (session.current != null) TextButton(onClick = { readerOptionsVisible = false; showPageThumbnails = true }) { Text("Show page previews") }
+                    TextButton(onClick = { readerOptionsVisible = false; closeBook() }) { Text("Return to library") }
+                } }, confirmButton = { TextButton(onClick = { readerOptionsVisible = false }) { Text("Done") } })
+        }
+        if (sortOptionsVisible) {
+            AlertDialog(onDismissRequest = { sortOptionsVisible = false }, title = { Text("Sort comics") },
+                text = { Column { LibrarySort.entries.forEach { choice ->
+                    TextButton(onClick = { sort = choice; sortOptionsVisible = false }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (sort == choice) "✓  ${choice.label}" else choice.label)
+                    }
+                } } }, confirmButton = { TextButton(onClick = { sortOptionsVisible = false }) { Text("Done") } })
+        }
+        if (createCollectionVisible) {
+            AlertDialog(onDismissRequest = { createCollectionVisible = false }, title = { Text("New collection") },
+                text = { OutlinedTextField(newCollectionName, { newCollectionName = it }, label = { Text("Collection name") }, singleLine = true) },
+                confirmButton = { TextButton(enabled = newCollectionName.isNotBlank(), onClick = {
+                    val name = newCollectionName.trim()
+                    scope.launch { repository.createCollection(name); customCollections = repository.customCollections() }
+                    newCollectionName = ""; createCollectionVisible = false
+                }) { Text("Create") } }, dismissButton = { TextButton(onClick = { createCollectionVisible = false }) { Text("Cancel") } })
         }
         if (licenseDialog) {
             val license = remember(context) {
@@ -709,58 +641,31 @@ private fun ComicApp() {
                 confirmButton = { TextButton(onClick = { licenseDialog = false }) { Text("Close") } },
             )
         }
-        if (settingsDialog) {
-            AlertDialog(
-                onDismissRequest = { settingsDialog = false },
-                title = { Text("Library and reader") },
-                text = {
-                    Column(Modifier.fillMaxWidth().heightIn(max = 500.dp).verticalScroll(rememberScrollState())) {
-                        Text("Cover size · ${coverWidth} dp")
-                        Slider(
-                            value = coverWidth.toFloat(), onValueChange = { coverWidth = it.roundToInt() },
-                            onValueChangeFinished = { prefs.edit().putInt("coverWidth", coverWidth).apply() },
-                            valueRange = 120f..240f, steps = 5,
-                        )
-                        Text("Accent color", style = MaterialTheme.typography.titleSmall)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("violet", "teal", "amber").forEach { name ->
-                                FilterChip(selected = accentName == name, onClick = {
-                                    accentName = name
-                                    prefs.edit().putString("accent", name).apply()
-                                }, label = { Text(name.replaceFirstChar { it.uppercase() }) })
-                            }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Thin reader progress line", Modifier.weight(1f))
-                            Switch(showReaderProgress, onCheckedChange = {
-                                showReaderProgress = it
-                                prefs.edit().putBoolean("showReaderProgress", it).apply()
-                            })
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Keep screen awake while reading", Modifier.weight(1f))
-                            Switch(keepScreenAwake, onCheckedChange = {
-                                keepScreenAwake = it
-                                prefs.edit().putBoolean("keepScreenAwake", it).apply()
-                            })
-                        }
-                    }
-                },
-                confirmButton = { TextButton(onClick = { settingsDialog = false }) { Text("Done") } },
-            )
-        }
+
         detailBook?.let { selectedBook ->
             val entry = catalogEntries.firstOrNull { it.uri == selectedBook.uri.toString() }
             LaunchedEffect(selectedBook.uri) { newCollectionName = "" }
-            AlertDialog(
-                onDismissRequest = { detailBook = null },
-                title = { Text(selectedBook.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                text = {
-                    Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+            ModalBottomSheet(onDismissRequest = { detailBook = null }, containerColor = MaterialTheme.colorScheme.surface) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 28.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CoverPreview(selectedBook, diskCoverCache, Modifier.size(76.dp, 106.dp).clip(RoundedCornerShape(12.dp)))
+                        Column(Modifier.padding(start = 14.dp)) {
+                            Text(selectedBook.title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(entry?.let(::comicStatus)?.label ?: "Unread", Modifier.padding(top = 6.dp),
+                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Text("${selectedBook.format.uppercase()} comic", Modifier.padding(top = 3.dp),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()).padding(top = 20.dp)) {
                         Text("${selectedBook.format.uppercase()} · ${entry?.pageCount?.takeIf { it > 0 } ?: "Page count unknown"} pages")
                         Text("${entry?.let(::comicStatus)?.label ?: "Unread"} · ${entry?.let(::progressFraction)?.takeUnless { it.isNaN() }?.let { "${(it * 100).roundToInt()}% read" } ?: "Not started"}",
                             modifier = Modifier.padding(top = 4.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = {
+                                detailBook = null
+                                startReading(selectedBook)
+                            }) { Text(if ((entry?.pageIndex ?: -1) >= 0) "Resume reading" else "Start reading") }
                             TextButton(onClick = {
                                 scope.launch {
                                     repository.setFavorite(selectedBook.uri.toString(), entry?.favorite != true)
@@ -821,9 +726,8 @@ private fun ComicApp() {
                             }
                         }, enabled = newCollectionName.isNotBlank()) { Text("Create and add") }
                     }
-                },
-                confirmButton = { TextButton(onClick = { detailBook = null }) { Text("Close") } },
-            )
+                }
+            }
         }
         if (showBookmarks) {
             AlertDialog(
@@ -909,7 +813,7 @@ private fun scanFolder(context: android.content.Context, uri: Uri, cancellationC
 }
 
 @Composable
-private fun coverPreview(book: Book, diskCache: CoverDiskCache): Bitmap? {
+internal fun coverPreview(book: Book, diskCache: CoverDiskCache): Bitmap? {
     val context = LocalContext.current
     val previewKey = coverCacheKey(book.uri.toString(), book.size, book.lastModified)
     var preview by remember(previewKey) { mutableStateOf(coverCache.get(previewKey)) }
@@ -941,7 +845,7 @@ private fun coverPreview(book: Book, diskCache: CoverDiskCache): Bitmap? {
 }
 
 @Composable
-private fun CoverPreview(book: Book, diskCache: CoverDiskCache, modifier: Modifier = Modifier) {
+internal fun CoverPreview(book: Book, diskCache: CoverDiskCache, modifier: Modifier = Modifier) {
     val preview = coverPreview(book, diskCache)
     if (preview != null) {
         Image(preview.asImageBitmap(), contentDescription = "Cover preview for ${book.title}",
@@ -1041,8 +945,8 @@ private fun LibraryCollectionCard(
         colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.surfaceVariant
             else MaterialTheme.colorScheme.surface)) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            CoverPreview(collection.cover, diskCache,
-                Modifier.size(width = 58.dp, height = 80.dp).clip(RoundedCornerShape(8.dp)))
+            collection.cover?.let { CoverPreview(it, diskCache,
+                Modifier.size(width = 58.dp, height = 80.dp).clip(RoundedCornerShape(8.dp))) }
             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                 Text(collection.name, maxLines = 2, overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.titleSmall)
