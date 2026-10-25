@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -35,6 +36,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -277,8 +279,9 @@ fun PageTurnReader(
             }
         }
         if (zoomTransform.scale > 1.01f) {
-            TextButton(onClick = ::resetZoom, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) {
-                Text("Reset zoom")
+            Surface(Modifier.align(Alignment.TopEnd).padding(14.dp), color = Color(0xB811151E),
+                shape = RoundedCornerShape(50)) {
+                TextButton(onClick = ::resetZoom) { Text("Reset zoom") }
             }
         }
     }

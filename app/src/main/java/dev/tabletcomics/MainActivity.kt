@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -73,6 +74,7 @@ import dev.tabletcomics.reader.PageTurnStyle
 import dev.tabletcomics.reader.ReaderRestoreState
 import dev.tabletcomics.reader.SeekState
 import dev.tabletcomics.reader.TurnNavigation
+import dev.tabletcomics.ui.ComicsTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -410,38 +412,42 @@ private fun ComicApp() {
         nextIssueInNaturalOrder(group, active.uri)
     }
     val nextIssueBook = nextIssueEntry?.let { booksByUri[it.uri] }
-    val accentColor = when (accentName) {
-        "teal" -> Color(0xFF69DCCB)
-        "amber" -> Color(0xFFFFC857)
-        else -> Color(0xFFD7B8FF)
-    }
-
-    MaterialTheme(colorScheme = darkColorScheme(primary = accentColor, secondary = accentColor, tertiary = accentColor)) {
+    ComicsTheme(accentName) {
         if (currentBook == null) {
-            Scaffold(topBar = {
-                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Image(painterResource(R.drawable.ic_brand_logo), contentDescription = null, modifier = Modifier.size(40.dp))
-                    Text("Tablet Comics", Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.titleLarge)
-                    TextButton(onClick = { licenseDialog = true }) { Text("About & licenses") }
+            Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = {
+                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                    .padding(horizontal = 28.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Image(painterResource(R.drawable.ic_brand_logo), contentDescription = null,
+                        modifier = Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)))
+                    Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                        Text("Tablet Comics", style = MaterialTheme.typography.titleLarge)
+                        Text("YOUR PERSONAL COMIC LIBRARY", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                    }
+                    TextButton(onClick = { licenseDialog = true }) { Text("About") }
                     TextButton(onClick = { settingsDialog = true }) { Text("Settings") }
-                    TextButton(onClick = { picker.launch(null) }) { Text("Choose folder") }
                     if (folder != null) TextButton(onClick = { folder?.let(::scan) }) { Text("Refresh") }
+                    Button(onClick = { picker.launch(null) }, shape = RoundedCornerShape(14.dp)) {
+                        Text(if (folder == null) "Choose library" else "Change folder")
+                    }
                 }
             }) { insets ->
-                Column(Modifier.fillMaxSize().padding(insets)) {
+                Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(insets)) {
                     if (libraryLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    libraryMessage?.let { Text(it, Modifier.padding(horizontal = 18.dp, vertical = 6.dp)) }
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    libraryMessage?.let { Text(it, Modifier.padding(horizontal = 28.dp, vertical = 8.dp)) }
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = searchQuery,
                             onValueChange = { searchQuery = it },
-                            label = { Text("Search comics") },
+                            label = { Text("Search your library") },
                             singleLine = true,
                             modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(16.dp),
                         )
                         var sortMenu by remember { mutableStateOf(false) }
                         Box {
-                            TextButton(onClick = { sortMenu = true }) { Text("Sort: ${sort.label}") }
+                            OutlinedButton(onClick = { sortMenu = true }, modifier = Modifier.padding(start = 12.dp),
+                                shape = RoundedCornerShape(14.dp)) { Text("Sort · ${sort.label}") }
                             DropdownMenu(sortMenu, onDismissRequest = { sortMenu = false }) {
                                 LibrarySort.entries.forEach { option ->
                                     DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortMenu = false })
@@ -449,7 +455,7 @@ private fun ComicApp() {
                             }
                         }
                     }
-                    LazyRow(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyRow(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                         items(LibraryFilter.entries) { option ->
                             FilterChip(selected = filter == option, onClick = { filter = option }, label = { Text(option.label) })
                         }
@@ -459,7 +465,7 @@ private fun ComicApp() {
                                 FilterChip(
                                     selected = selectedFolderPath != null || selectedCustomCollection != null,
                                     onClick = { collectionMenu = true },
-                                    label = { Text(selectedCustomCollection ?: selectedFolderPath?.substringAfterLast('/') ?: "Collections") },
+                                    label = { Text(selectedCustomCollection ?: selectedFolderPath?.substringAfterLast('/') ?: "All collections") },
                                 )
                                 DropdownMenu(collectionMenu, onDismissRequest = { collectionMenu = false }) {
                                     DropdownMenuItem(text = { Text("All comics") }, onClick = {
@@ -479,18 +485,27 @@ private fun ComicApp() {
                             }
                         }
                     }
-                    if (folder == null) Text("Choose a folder containing comic archives.", Modifier.padding(16.dp))
+                    if (folder == null) {
+                        Surface(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 16.dp),
+                            color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(22.dp)) {
+                            Row(Modifier.padding(22.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Build your bookshelf", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                                Text("Choose a folder containing CBZ, ZIP, CBR or RAR comics.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = coverWidth.dp),
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 24.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        contentPadding = PaddingValues(start = 28.dp, end = 28.dp, top = 18.dp, bottom = 32.dp),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(20.dp),
                     ) {
                         if (continueEntries.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
                             Column {
-                                Text("Continue reading", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 8.dp))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                LibrarySectionTitle("Continue reading", "Pick up where you left off")
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 6.dp)) {
                                     items(continueEntries, key = { "continue:${it.uri}" }) { entry ->
                                         val book = booksByUri[entry.uri] ?: return@items
                                         ContinueReadingCard(book, entry, diskCoverCache, onClick = { openBook(book) })
@@ -500,8 +515,8 @@ private fun ComicApp() {
                         }
                         if (collectionShelves.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
                             Column {
-                                Text("Collections", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 8.dp))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                LibrarySectionTitle("Collections", "Your comics, grouped together")
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 6.dp)) {
                                     items(collectionShelves, key = { it.key }) { shelf ->
                                         val selected = (shelf.folderPath != null && selectedFolderPath == shelf.folderPath) ||
                                             (shelf.customName != null && selectedCustomCollection == shelf.customName)
@@ -515,9 +530,13 @@ private fun ComicApp() {
                         }
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text("${shelfEntries.size} comics", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                                Column(Modifier.weight(1f)) {
+                                    Text("Your bookshelf", style = MaterialTheme.typography.headlineSmall)
+                                    Text("${shelfEntries.size} ${if (shelfEntries.size == 1) "comic" else "comics"}",
+                                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                                 TextButton(onClick = { coverWidth = (coverWidth - 20).coerceAtLeast(120); prefs.edit().putInt("coverWidth", coverWidth).apply() }) { Text("−") }
-                                Text("Cover size", style = MaterialTheme.typography.labelMedium)
+                                Text("Cover size", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 TextButton(onClick = { coverWidth = (coverWidth + 20).coerceAtMost(240); prefs.edit().putInt("coverWidth", coverWidth).apply() }) { Text("+") }
                             }
                         }
@@ -554,7 +573,8 @@ private fun ComicApp() {
                     }
                 }
                 session.error?.let { message ->
-                    Surface(Modifier.align(Alignment.Center).padding(24.dp), color = MaterialTheme.colorScheme.errorContainer) {
+                    Surface(Modifier.align(Alignment.Center).padding(24.dp), color = MaterialTheme.colorScheme.errorContainer,
+                        shape = RoundedCornerShape(20.dp), shadowElevation = 12.dp) {
                         Column(Modifier.padding(16.dp)) {
                             Text(message)
                             Row {
@@ -569,25 +589,37 @@ private fun ComicApp() {
                     }
                 }
                 if (controlsVisible || session.current == null) {
-                    Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(alpha = .88f))
-                        .statusBarsPadding().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = ::closeBook) { Text("Library") }
-                        Text(currentBook?.title.orEmpty(), Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Surface(Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(horizontal = 16.dp)
+                        .statusBarsPadding().padding(top = 10.dp),
+                        color = Color(0xC9101218), shape = RoundedCornerShape(18.dp), shadowElevation = 8.dp) {
+                        Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = ::closeBook) { Text("‹  Library") }
+                            Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                                Text(currentBook?.title.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.titleSmall)
+                                Text("IMMERSIVE READER", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            TextButton(onClick = { settingsDialog = true }) { Text("Settings") }
+                        }
                     }
                 }
                 if (controlsVisible && session.current != null) {
-                    Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = .9f))
-                        .navigationBarsPadding().padding(12.dp)) {
+                    Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)
+                        .navigationBarsPadding(), color = Color(0xE6101218), shape = RoundedCornerShape(22.dp), shadowElevation = 12.dp) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val shownPage = session.requestedPageIndex ?: session.current!!.startIndex
-                            Text("${shownPage + 1} / ${session.totalPages}", Modifier.weight(1f))
-                            Text("Right to left")
+                            Text("${shownPage + 1}  /  ${session.totalPages}", Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleSmall)
+                            Text("RTL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Switch(rightToLeft, onCheckedChange = {
                                 rightToLeft = it
                                 currentBook?.let { book -> prefs.edit().putBoolean("rtl:${book.uri}", it).apply() }
                             })
                             if (landscape) {
-                                Text("Spreads", Modifier.padding(start = 12.dp))
+                                Text("Spread", Modifier.padding(start = 12.dp), style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Switch(spreads, onCheckedChange = {
                                     spreads = it
                                     currentBook?.let { book -> prefs.edit().putBoolean("spreads:${book.uri}", it).apply() }
@@ -595,7 +627,8 @@ private fun ComicApp() {
                             }
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Button(onClick = { turn(rightToLeft) }, enabled = rightToLeft || session.previous != null) {
+                            OutlinedButton(onClick = { turn(rightToLeft) }, enabled = rightToLeft || session.previous != null,
+                                shape = RoundedCornerShape(14.dp)) {
                                 Text(if (rightToLeft) "Next" else "Previous")
                             }
                             Box {
@@ -610,7 +643,8 @@ private fun ComicApp() {
                                     }
                                 }
                             }
-                            Button(onClick = { turn(!rightToLeft) }, enabled = !rightToLeft || session.previous != null) {
+                            Button(onClick = { turn(!rightToLeft) }, enabled = !rightToLeft || session.previous != null,
+                                shape = RoundedCornerShape(14.dp)) {
                                 Text(if (rightToLeft) "Previous" else "Next")
                             }
                         }
@@ -627,10 +661,10 @@ private fun ComicApp() {
                         )
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween) {
-                            TextButton(onClick = ::toggleBookmark) { Text(if (currentIsBookmarked) "Remove bookmark" else "Bookmark page") }
+                            TextButton(onClick = ::toggleBookmark) { Text(if (currentIsBookmarked) "★ Saved" else "☆ Bookmark") }
                             TextButton(onClick = { showBookmarks = true }) { Text("Bookmarks (${bookmarks.size})") }
                             TextButton(onClick = { showPageThumbnails = !showPageThumbnails }) {
-                                Text(if (showPageThumbnails) "Hide pages" else "Page previews")
+                                Text(if (showPageThumbnails) "Hide previews" else "Page previews")
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("Keep awake", style = MaterialTheme.typography.labelSmall)
@@ -654,6 +688,7 @@ private fun ComicApp() {
                                 }
                             }
                         }
+                    }
                     }
                 }
             }
@@ -918,6 +953,14 @@ private fun CoverPreview(book: Book, diskCache: CoverDiskCache, modifier: Modifi
     }
 }
 
+@Composable
+private fun LibrarySectionTitle(title: String, subtitle: String) {
+    Row(Modifier.fillMaxWidth().padding(bottom = 10.dp, top = 8.dp), verticalAlignment = Alignment.Bottom) {
+        Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ComicCoverCard(
@@ -928,29 +971,37 @@ private fun ComicCoverCard(
     onLongClick: () -> Unit,
 ) {
     val fraction = progressFraction(entry).let { if (it.isNaN()) 0f else it }
-    Card(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick)) {
-        Column(Modifier.padding(10.dp)) {
-            Box(Modifier.fillMaxWidth().aspectRatio(0.72f).clip(RoundedCornerShape(10.dp))) {
+    Card(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.padding(9.dp)) {
+            Box(Modifier.fillMaxWidth().aspectRatio(0.70f).clip(RoundedCornerShape(12.dp))) {
                 CoverPreview(book, diskCache, Modifier.fillMaxSize())
+                Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(76.dp)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .72f)))))
                 Surface(Modifier.align(Alignment.TopStart).padding(7.dp), shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = .9f)) {
+                    color = Color(0xD9141720)) {
                     Text(comicStatus(entry).label, Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
-                        style = MaterialTheme.typography.labelSmall)
+                        style = MaterialTheme.typography.labelSmall, color = Color.White)
                 }
                 if (entry.favorite) Surface(Modifier.align(Alignment.TopEnd).padding(7.dp), shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.secondaryContainer) {
-                    Text("★", Modifier.padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall)
+                    color = Color(0xD9141720)) {
+                    Text("★", Modifier.padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary)
                 }
+                Text(book.format.uppercase(), Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 9.dp),
+                    style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = .88f))
             }
-            Text(book.title, Modifier.fillMaxWidth().padding(top = 9.dp), maxLines = 2, overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleSmall, minLines = 2)
+            Text(book.title, Modifier.fillMaxWidth().padding(top = 10.dp), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleSmall, minLines = 2, color = MaterialTheme.colorScheme.onSurface)
             Text(
                 if (entry.pageIndex >= 0 && entry.pageCount > 0)
                     "${(fraction * 100).roundToInt()}% · ${entry.pageIndex + 1}/${entry.pageCount} pages"
                 else "${book.format.uppercase()} · Not started",
                 Modifier.padding(top = 3.dp), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Box(Modifier.fillMaxWidth().padding(top = 7.dp).height(3.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))) {
+            Box(Modifier.fillMaxWidth().padding(top = 9.dp).height(4.dp).background(Color(0xFF2B3040), RoundedCornerShape(4.dp))) {
                 if (entry.pageIndex >= 0 && entry.pageCount > 0)
                     Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp)))
             }
@@ -961,18 +1012,19 @@ private fun ComicCoverCard(
 @Composable
 private fun ContinueReadingCard(book: Book, entry: ComicLibraryEntry, diskCache: CoverDiskCache, onClick: () -> Unit) {
     val fraction = progressFraction(entry).let { if (it.isNaN()) 0f else it }
-    Card(Modifier.width(250.dp).clickable(onClick = onClick)) {
-        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            CoverPreview(book, diskCache, Modifier.size(width = 64.dp, height = 92.dp).clip(RoundedCornerShape(8.dp)))
+    Card(Modifier.width(292.dp).clickable(onClick = onClick), shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            CoverPreview(book, diskCache, Modifier.size(width = 76.dp, height = 108.dp).clip(RoundedCornerShape(10.dp)))
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(book.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                 Text("Page ${entry.pageIndex + 1} of ${entry.pageCount}", style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(top = 6.dp))
-                Box(Modifier.fillMaxWidth().padding(top = 8.dp).height(4.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))) {
+                    modifier = Modifier.padding(top = 7.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(Modifier.fillMaxWidth().padding(top = 10.dp).height(4.dp).background(Color(0xFF2B3040), RoundedCornerShape(4.dp))) {
                     Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp)))
                 }
-                Text("Resume", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(top = 6.dp))
+                Text("RESUME READING  ›", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 10.dp))
             }
         }
     }
@@ -985,12 +1037,12 @@ private fun LibraryCollectionCard(
     diskCache: CoverDiskCache,
     onClick: () -> Unit,
 ) {
-    Card(Modifier.width(190.dp).clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant)) {
+    Card(Modifier.width(204.dp).clickable(onClick = onClick), shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.surfaceVariant
+            else MaterialTheme.colorScheme.surface)) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
             CoverPreview(collection.cover, diskCache,
-                Modifier.size(width = 52.dp, height = 72.dp).clip(RoundedCornerShape(7.dp)))
+                Modifier.size(width = 58.dp, height = 80.dp).clip(RoundedCornerShape(8.dp)))
             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                 Text(collection.name, maxLines = 2, overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.titleSmall)

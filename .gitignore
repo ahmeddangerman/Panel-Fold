@@ -6,3 +6,5 @@ local.properties
 
 # Native build outputs
 **/.cxx/
+
+.kotlin/
