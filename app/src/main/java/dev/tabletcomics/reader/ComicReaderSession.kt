@@ -3,6 +3,8 @@ package dev.tabletcomics.reader
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapRegionDecoder
+import android.graphics.Rect
 import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.getValue
@@ -15,6 +17,7 @@ import dev.tabletcomics.archive.RarArchiveReader
 import dev.tabletcomics.archive.archiveCancellationRegistrar
 import dev.tabletcomics.archive.detectArchiveFormat
 import dev.tabletcomics.archive.ZipArchiveReader
+import dev.tabletcomics.reader.FullResolutionPage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +32,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 import kotlin.math.max
 import kotlin.math.min
@@ -61,19 +66,44 @@ class ComicReaderSession(
     }
     private data class Cached(val unit: ReaderUnit, val dimension: Int)
     private val cache = linkedMapOf<Int, Cached>()
+    private val fullResolutionSources = ConcurrentHashMap<Int, FullResolutionPage>()
 
     // Reserve room for a current upgrade while its lower-resolution version is still drawn.
     private val totalBitmapBudget = min(40L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 6)
     private val byteBudget = (totalBitmapBudget - 3L * 1024 * 1024).coerceAtLeast(1L * 1024 * 1024)
     private fun dimensions(solid: Boolean = false): Pair<Int, Int> {
         val pageSlots = if (spreads) 2 else 1
+        val displayTarget = max(context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
+            .coerceIn(1600, 4096).toDouble()
         val worstPixels = pageSlots * if (solid) {
-            2 * 1600.0 * 1600 + 900.0 * 900
+            2 * displayTarget * displayTarget + 900.0 * 900
         } else {
-            1600.0 * 1600 + 3 * 900.0 * 900
+            displayTarget * displayTarget + 3 * 900.0 * 900
         }
         val factor = min(1.0, sqrt(byteBudget * 0.85 / (4.0 * worstPixels)))
-        return max(256, (1600 * factor).toInt()) to max(144, (900 * factor).toInt())
+        return max(256, (displayTarget * factor).toInt()) to max(144, (900 * factor).toInt())
+    }
+
+    suspend fun decodeRegions(source: FullResolutionPage, regions: List<Rect>): List<Bitmap?> = withContext(Dispatchers.IO) {
+        if (source.sourceFile.length() <= 0L) return@withContext regions.map { null }
+        var decoder: BitmapRegionDecoder? = null
+        try {
+            decoder = BitmapRegionDecoder.newInstance(source.sourceFile.absolutePath, false)
+            regions.map { region ->
+                val safe = Rect(region).apply { intersect(0, 0, source.width, source.height) }
+                if (safe.isEmpty) null else decoder.decodeRegion(safe, BitmapFactory.Options().apply {
+                    inSampleSize = 1
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inScaled = false
+                })
+            }
+        } catch (_: OutOfMemoryError) {
+            regions.map { null }
+        } catch (_: Exception) {
+            regions.map { null }
+        } finally {
+            decoder?.recycle()
+        }
     }
 
     var current: ReaderUnit? by mutableStateOf(null)
@@ -281,6 +311,8 @@ class ComicReaderSession(
             earlierCleanup?.join()
             oldWorker?.cancelAndJoin()
             oldArchive?.let { closeResource(it) }
+            fullResolutionSources.values.forEach { it.sourceFile.delete() }
+            fullResolutionSources.clear()
         }
         uri = null
         cache.clear()
@@ -392,6 +424,10 @@ class ComicReaderSession(
             if (seekState.renderedIndex != start) seekState = seekState.rendered(start)
             destinationRequests.complete(start)
         }
+        val keepSources = (wantedNeighbors(start) + start + if (spreads) listOf(start + 1) else emptyList()).toSet()
+        fullResolutionSources.entries.removeIf { (index, source) ->
+            if (index in keepSources) false else { source.sourceFile.delete(); true }
+        }
     }
 
     private fun wantedNeighbors(start: Int): List<Int> = if (archive?.isSolid == true) {
@@ -430,10 +466,33 @@ class ComicReaderSession(
             ioMutex.withLock {
                 val decoded = indices.map { index ->
                     cancellationCheck()
-                    index to decode(opened.readPage(opened.pages[index], cancellationCheck, cancellationRegistration), dimension)
+                    val bytes = opened.readPage(opened.pages[index], cancellationCheck, cancellationRegistration)
+                    if (fullResolutionSources[index] == null) {
+                        runCatching { saveFullResolutionSource(index, bytes) }.getOrNull()?.let { source ->
+                            fullResolutionSources[index] = source
+                        }
+                    }
+                    index to decode(bytes, dimension)
                 }
-                ReaderUnit(start, if (rtl) decoded.reversed() else decoded)
+                ReaderUnit(start, if (rtl) decoded.reversed() else decoded,
+                    indices.mapNotNull { index -> fullResolutionSources[index]?.let { index to it } }.toMap())
             }
+        }
+    }
+
+    private fun saveFullResolutionSource(index: Int, bytes: ByteArray): FullResolutionPage {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (!ArchiveLimits.isImageSizeAllowed(bounds.outWidth, bounds.outHeight))
+            throw IOException("Unsupported or oversized image page.")
+        val directory = File(context.cacheDir, "comic-page-source").apply { mkdirs() }
+        val file = File.createTempFile("page-${index}-", ".image", directory)
+        try {
+            file.writeBytes(bytes)
+            return FullResolutionPage(index, file, bounds.outWidth, bounds.outHeight)
+        } catch (failure: Exception) {
+            file.delete()
+            throw failure
         }
     }
 

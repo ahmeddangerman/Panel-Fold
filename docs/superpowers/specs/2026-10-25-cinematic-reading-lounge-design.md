@@ -75,5 +75,6 @@ Success means the rendered app matches the new screen composition, not simply ne
 ## Implementation checkpoint
 
 - Implemented the new Home, Library, Collections and Settings destinations, responsive rail/bottom navigation, cover based Home tint, compact reader dock and on demand reader options.
+- Cover previews decode to 1024px and use a versioned cache key. Reader page fit resolution now follows the tablet display size within its existing memory budget; zoom decodes original image pixels from unchanged staged page data into 512px tiles, capped at 20 visible tiles.
 - `:app:assembleDebug` and `:app:lintDebug` passed for this checkpoint.
 - Real device screenshot comparison remains pending: no Android device or emulator is available in the build environment.

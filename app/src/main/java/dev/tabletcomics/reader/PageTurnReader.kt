@@ -1,6 +1,8 @@
 package dev.tabletcomics.reader
 
 import android.graphics.Bitmap
+import android.graphics.Rect
+import java.io.File
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.min
@@ -48,7 +51,15 @@ enum class PageTurnStyle(val label: String) {
     PHOTO_SLIDE("Photo swipe"), PAPER_CURL("Paper curl"), SLIDING_SHEET("Sliding sheet")
 }
 
-data class ReaderUnit(val startIndex: Int, val pages: List<Pair<Int, Bitmap>>)
+data class FullResolutionPage(val pageIndex: Int, val sourceFile: File, val width: Int, val height: Int)
+
+data class ReaderUnit(
+    val startIndex: Int,
+    val pages: List<Pair<Int, Bitmap>>,
+    val fullResolutionPages: Map<Int, FullResolutionPage> = emptyMap(),
+)
+
+private data class DetailTile(val pageIndex: Int, val region: Rect, val bitmap: Bitmap)
 
 /** Neighbors are decoded before they may be dragged into view. Progress is committed only after settling. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -64,6 +75,7 @@ fun PageTurnReader(
     onToggleControls: () -> Unit,
     onEndReached: () -> Unit,
     showZoomReset: Boolean = true,
+    onDecodeRegions: suspend (FullResolutionPage, List<Rect>) -> List<Bitmap?>,
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
@@ -74,6 +86,7 @@ fun PageTurnReader(
     var settleJob by remember { mutableStateOf<Job?>(null) }
     var committedUnit by remember { mutableStateOf<ReaderUnit?>(null) }
     var zoomTransform by remember(current.startIndex, layoutKey) { mutableStateOf(ZoomTransform.Identity) }
+    var detailTiles by remember(current.startIndex, layoutKey) { mutableStateOf<List<DetailTile>>(emptyList()) }
     val latestCurrent = rememberUpdatedState(current)
     val latestPrevious = rememberUpdatedState(previous)
     val latestNext = rememberUpdatedState(next)
@@ -81,6 +94,7 @@ fun PageTurnReader(
     val turn = rememberUpdatedState(onTurn)
     val toggle = rememberUpdatedState(onToggleControls)
     val endReached = rememberUpdatedState(onEndReached)
+    val decodeRegions = rememberUpdatedState(onDecodeRegions)
     val tracker = remember { VelocityTracker() }
     var motionJob by remember { mutableStateOf<Job?>(null) }
     fun animateZoom(target: ZoomTransform, duration: Int = 280) {
@@ -141,6 +155,53 @@ fun PageTurnReader(
         motionJob?.cancel()
         turnState.reset()
         committedUnit = null
+    }
+
+    LaunchedEffect(current.startIndex, layoutKey, viewport, zoomTransform.scale, zoomTransform.pan, current.fullResolutionPages) {
+        if (zoomTransform.scale <= 1.05f || viewport.width <= 0f || viewport.height <= 0f) {
+            detailTiles = emptyList()
+            return@LaunchedEffect
+        }
+        delay(90)
+        detailTiles = emptyList()
+        val result = mutableListOf<DetailTile>()
+        val slotWidth = viewport.width / current.pages.size.coerceAtLeast(1)
+        val viewportLeft = -zoomTransform.pan.x / zoomTransform.scale
+        val viewportTop = -zoomTransform.pan.y / zoomTransform.scale
+        val viewportRight = (viewport.width - zoomTransform.pan.x) / zoomTransform.scale
+        val viewportBottom = (viewport.height - zoomTransform.pan.y) / zoomTransform.scale
+        current.pages.forEachIndexed { pageSlot, (pageIndex, preview) ->
+            val source = current.fullResolutionPages[pageIndex] ?: return@forEachIndexed
+            val imageScale = min(slotWidth / preview.width, viewport.height / preview.height)
+            val imageWidth = preview.width * imageScale
+            val imageHeight = preview.height * imageScale
+            val imageLeft = slotWidth * pageSlot + (slotWidth - imageWidth) / 2f
+            val imageTop = (viewport.height - imageHeight) / 2f
+            val left = maxOf(imageLeft, viewportLeft)
+            val top = maxOf(imageTop, viewportTop)
+            val right = minOf(imageLeft + imageWidth, viewportRight)
+            val bottom = minOf(imageTop + imageHeight, viewportBottom)
+            if (right <= left || bottom <= top) return@forEachIndexed
+            val region = Rect(
+                ((left - imageLeft) / imageScale * source.width / preview.width).toInt().coerceIn(0, source.width - 1),
+                ((top - imageTop) / imageScale * source.height / preview.height).toInt().coerceIn(0, source.height - 1),
+                (((right - imageLeft) / imageScale * source.width / preview.width).toInt() + 1).coerceIn(1, source.width),
+                (((bottom - imageTop) / imageScale * source.height / preview.height).toInt() + 1).coerceIn(1, source.height),
+            )
+            val tileSize = 512
+            val regions = mutableListOf<Rect>()
+            tileLoop@ for (top in region.top until region.bottom step tileSize) {
+                for (left in region.left until region.right step tileSize) {
+                    if (result.size + regions.size >= 20) break@tileLoop
+                    val tileRegion = Rect(left, top, minOf(left + tileSize, region.right), minOf(top + tileSize, region.bottom))
+                    regions += tileRegion
+                }
+            }
+            decodeRegions.value(source, regions).forEachIndexed { index, bitmap ->
+                bitmap?.let { result += DetailTile(pageIndex, regions[index], it) }
+            }
+        }
+        detailTiles = result
     }
 
     fun neighborFor(offset: Float): ReaderUnit? {
@@ -278,6 +339,11 @@ fun PageTurnReader(
                 }
                 PageTurnStyle.PAPER_CURL -> drawCurl(drawnCurrent, target, drag, turnWidth)
             }
+            if (abs(drag) < 0.1f) {
+                detailTiles.forEach { tile ->
+                    drawRegionTile(drawnCurrent, tile.pageIndex, tile.region, tile.bitmap)
+                }
+            }
         }
         if (zoomTransform.scale > 1.01f && showZoomReset) {
             Surface(Modifier.align(Alignment.TopEnd).padding(14.dp), color = Color(0xB811151E),
@@ -299,6 +365,29 @@ private fun DrawScope.drawUnit(unit: ReaderUnit, offset: Float = 0f, alpha: Floa
         drawImage(bitmap.asImageBitmap(), dstOffset = IntOffset((offset + slot * index + (slot - w) / 2).roundToInt(), ((size.height - h) / 2).roundToInt()),
             dstSize = IntSize(w, h), alpha = alpha, filterQuality = FilterQuality.Medium)
     }
+}
+
+private fun DrawScope.drawRegionTile(
+    unit: ReaderUnit,
+    pageIndex: Int,
+    region: Rect,
+    bitmap: Bitmap,
+) {
+    val slot = size.width / unit.pages.size.coerceAtLeast(1)
+    val slotIndex = unit.pages.indexOfFirst { it.first == pageIndex }
+    if (slotIndex < 0) return
+    val preview = unit.pages[slotIndex].second
+    val source = unit.fullResolutionPages[pageIndex] ?: return
+    val fit = min(slot / preview.width, size.height / preview.height)
+    val imageWidth = preview.width * fit
+    val imageHeight = preview.height * fit
+    val left = slot * slotIndex + (slot - imageWidth) / 2f + region.left.toFloat() / source.width * imageWidth
+    val top = (size.height - imageHeight) / 2f + region.top.toFloat() / source.height * imageHeight
+    val width = region.width().toFloat() / source.width * imageWidth
+    val height = region.height().toFloat() / source.height * imageHeight
+    drawImage(bitmap.asImageBitmap(), dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
+        dstSize = IntSize(width.roundToInt().coerceAtLeast(1), height.roundToInt().coerceAtLeast(1)),
+        filterQuality = FilterQuality.High)
 }
 
 /** A clipped front sheet and curved, reflected paper band reveal the ready neighbor beneath. */

@@ -303,7 +303,10 @@ private fun ComicApp() {
         } catch (error: Exception) { libraryMessage = error.message ?: "Cannot retain folder access." }
     }
     LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) { StagedArchive.cleanupExpired(context.cacheDir) }
+        withContext(Dispatchers.IO) {
+            StagedArchive.cleanupExpired(context.cacheDir)
+            java.io.File(context.cacheDir, "comic-page-source").deleteRecursively()
+        }
     }
     LaunchedEffect(folder) { folder?.let(::scan) }
     LaunchedEffect(session.current?.startIndex, session.requestedPageIndex, session.totalPages) {
@@ -504,7 +507,8 @@ private fun ComicApp() {
                         onTurn = { target -> session.navigate(target.startIndex) },
                         onToggleControls = { controlsVisible = !controlsVisible },
                         onEndReached = { finishDialog = true },
-                        showZoomReset = controlsVisible)
+                        showZoomReset = controlsVisible,
+                        onDecodeRegions = { source, regions -> session.decodeRegions(source, regions) })
                 }
                 if (session.loading && session.current == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
                 if (session.loading && session.current != null) {
