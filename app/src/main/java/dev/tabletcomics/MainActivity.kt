@@ -92,6 +92,7 @@ private val archiveIoLock = Mutex()
 private val coverCache = object : android.util.LruCache<String, Bitmap>(8 * 1024 * 1024) {
     override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
 }
+private const val COVER_PREVIEW_MAX_DIMENSION = 1024
 internal data class Book(
     val uri: Uri,
     val title: String,
@@ -815,7 +816,8 @@ private fun scanFolder(context: android.content.Context, uri: Uri, cancellationC
 @Composable
 internal fun coverPreview(book: Book, diskCache: CoverDiskCache): Bitmap? {
     val context = LocalContext.current
-    val previewKey = coverCacheKey(book.uri.toString(), book.size, book.lastModified)
+    // Bump this key when preview decoding changes so existing small thumbnails are regenerated.
+    val previewKey = "${coverCacheKey(book.uri.toString(), book.size, book.lastModified)}#preview-v3-$COVER_PREVIEW_MAX_DIMENSION"
     var preview by remember(previewKey) { mutableStateOf(coverCache.get(previewKey)) }
     LaunchedEffect(previewKey, book.format) {
         if (preview != null) return@LaunchedEffect
@@ -829,7 +831,7 @@ internal fun coverPreview(book: Book, diskCache: CoverDiskCache): Bitmap? {
                 val format = detectArchiveFormat(context, book.uri, book.format, cancellationCheck, cancellationRegistration)
                 archiveReader(context, format)
                     .readPreview(book.uri, cancellationCheck, cancellationRegistration)
-                    ?.let { decodeImage(it, 320) }
+                    ?.let { decodeImage(it, COVER_PREVIEW_MAX_DIMENSION) }
                     ?.also {
                         coverCache.put(previewKey, it)
                         diskCache.put(previewKey, it)
