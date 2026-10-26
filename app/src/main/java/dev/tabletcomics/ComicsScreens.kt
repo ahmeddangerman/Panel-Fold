@@ -137,7 +137,7 @@ internal fun ComicLibraryScreen(
     onQuery: (String) -> Unit, filter: LibraryFilter, onFilter: (LibraryFilter) -> Unit,
     sort: LibrarySort, onSort: () -> Unit, coverSize: Int, onCoverSize: (Int) -> Unit,
     onOpen: (Book) -> Unit, onDetails: (Book) -> Unit,
-    scopeLabel: String? = null, onClearScope: () -> Unit = {},
+    scopeLabel: String? = null, onClearScope: () -> Unit = {}, notice: String? = null,
 ) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 32.dp, end = 28.dp, top = 28.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -156,6 +156,8 @@ internal fun ComicLibraryScreen(
             item { TextButton(onClick = { onCoverSize((coverSize + 20).coerceIn(120, 240)) }) { Text("Cover size +") } }
             item { TextButton(onClick = { onCoverSize((coverSize - 20).coerceIn(120, 240)) }) { Text("−") } }
         }
+        if (notice != null) Text(notice, Modifier.fillMaxWidth().padding(horizontal = 30.dp, vertical = 8.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
         if (books.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("No comics match this view.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else LazyVerticalGrid(GridCells.Adaptive(coverSize.dp), Modifier.fillMaxSize().testTag("library-grid"),
@@ -208,7 +210,8 @@ internal fun SettingsExperience(
     coverSize: Int, onCoverSize: (Int) -> Unit, accent: String, onAccent: (String) -> Unit,
     lightMode: Boolean, onLightMode: (Boolean) -> Unit,
     progress: Boolean, onProgress: (Boolean) -> Unit, keepAwake: Boolean, onKeepAwake: (Boolean) -> Unit,
-    hasFolder: Boolean, onChangeFolder: () -> Unit, onRefresh: () -> Unit, onAbout: () -> Unit,
+    folders: List<String>, onAddFolder: () -> Unit, onRefresh: () -> Unit,
+    onRemoveFolder: (Int) -> Unit, onAbout: () -> Unit,
     extraContent: @Composable ColumnScope.() -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(horizontal = 36.dp, vertical = 30.dp)) {
@@ -228,10 +231,20 @@ internal fun SettingsExperience(
             SettingSwitch("Keep screen awake", keepAwake, onKeepAwake)
         }
         SettingsGroup("Library") {
-            Text("${if (hasFolder) "A comic folder is selected" else "No folder selected"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (folders.isEmpty()) {
+                Text("No comic folders selected", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                folders.forEachIndexed { index, name ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(name, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        TextButton(onClick = { onRemoveFolder(index) }) { Text("Remove") }
+                    }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 10.dp)) {
-                OutlinedButton(onClick = onChangeFolder, shape = RoundedCornerShape(14.dp)) { Text("Change folder") }
-                if (hasFolder) TextButton(onClick = onRefresh) { Text("Refresh") }
+                OutlinedButton(onClick = onAddFolder, shape = RoundedCornerShape(14.dp)) { Text("Add folder") }
+                if (folders.isNotEmpty()) TextButton(onClick = onRefresh) { Text("Refresh") }
             }
         }
         extraContent()

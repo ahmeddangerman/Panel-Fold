@@ -151,7 +151,12 @@ private fun ComicApp() {
             }
         }
     }
-    var folder by remember { mutableStateOf(prefs.getString("folder", null)?.let(Uri::parse)) }
+    val initialFolders = remember {
+        (prefs.getStringSet("folders", null)?.toList()
+            ?: prefs.getString("folder", null)?.let { listOf(it) }.orEmpty())
+            .distinct().map(Uri::parse)
+    }
+    var folderUris by remember { mutableStateOf(initialFolders) }
     var books by remember { mutableStateOf<List<Book>>(emptyList()) }
     var libraryLoading by remember { mutableStateOf(false) }
     var libraryMessage by remember { mutableStateOf<String?>(null) }
@@ -199,25 +204,44 @@ private fun ComicApp() {
     val landscape = config.screenWidthDp > config.screenHeightDp
     val spreadMode = landscape && spreads && !verticalReading
 
-    fun scan(uri: Uri) {
+    fun scan(uris: List<Uri> = folderUris) {
         val generation = scanGeneration.begin()
         scanJob?.cancel()
+        val previousBooks = books
         scanJob = scope.launch {
             libraryLoading = true
             libraryMessage = null
             try {
                 val job = currentCoroutineContext()[Job] ?: return@launch
-                val found = withContext(Dispatchers.IO) { scanFolder(context, uri) { job.ensureActive() } }
-                repository.syncScannedComics(found.map {
-                    ScannedComic(it.uri.toString(), it.title, it.format, it.size, it.lastModified, it.folderPath)
-                }, prefs)
-                val storedEntries = repository.entries()
-                val storedCollections = repository.customCollections()
+                val found = mutableListOf<Book>()
+                val errors = mutableListOf<String>()
+                withContext(Dispatchers.IO) {
+                    for (uri in uris.distinctBy(Uri::toString)) {
+                        job.ensureActive()
+                        try { found += scanFolder(context, uri) { job.ensureActive() } }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (error: Exception) {
+                            val folderName = DocumentFile.fromTreeUri(context, uri)?.name ?: "Selected folder"
+                            errors += "$folderName: ${error.message ?: "access unavailable"}"
+                        }
+                    }
+                }
+                if (errors.isEmpty()) {
+                    repository.syncScannedComics(found.map {
+                        ScannedComic(it.uri.toString(), it.title, it.format, it.size, it.lastModified, it.folderPath)
+                    }, prefs)
+                }
+                val storedEntries = if (errors.isEmpty()) repository.entries() else libraryEntries
+                val storedCollections = if (errors.isEmpty()) repository.customCollections() else customCollections
                 if (scanGeneration.isCurrent(generation)) {
-                    books = found
+                    books = if (errors.isEmpty()) found else (previousBooks + found).distinctBy { it.uri.toString() }
                     libraryEntries = storedEntries
                     customCollections = storedCollections
-                    if (books.isEmpty()) libraryMessage = "No comic archives found in this folder."
+                    libraryMessage = when {
+                        errors.isNotEmpty() -> "Some folders could not be read: ${errors.joinToString("; ")}"
+                        books.isEmpty() -> "No comic archives found in the selected folders."
+                        else -> null
+                    }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -334,11 +358,33 @@ private fun ComicApp() {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) try {
             context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            prefs.edit().putString("folder", uri.toString()).apply()
+            val updated = (folderUris + uri).distinctBy(Uri::toString)
+            val alreadySelected = updated.size == folderUris.size
+            prefs.edit().putStringSet("folders", updated.map(Uri::toString).toSet())
+                .putString("folder", updated.firstOrNull()?.toString()).apply()
+            folderUris = updated
             selectedFolderPath = null
             selectedCustomCollection = null
-            if (folder == uri) scan(uri) else folder = uri
+            searchQuery = ""
+            filter = LibraryFilter.ALL
+            destination = AppDestination.LIBRARY
+            if (alreadySelected) scan(updated)
         } catch (error: Exception) { libraryMessage = error.message ?: "Cannot retain folder access." }
+    }
+    fun removeFolder(uri: Uri) {
+        val updated = folderUris.filterNot { it == uri }
+        runCatching { context.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        prefs.edit().putStringSet("folders", updated.map(Uri::toString).toSet())
+            .putString("folder", updated.firstOrNull()?.toString()).apply()
+        folderUris = updated
+        selectedFolderPath = null
+        selectedCustomCollection = null
+        searchQuery = ""
+        filter = LibraryFilter.ALL
+        destination = AppDestination.LIBRARY
+        if (updated.isEmpty()) {
+            scan(emptyList())
+        }
     }
     fun reloadToolSettings() {
         coverWidth = prefs.getInt("coverWidth", 164).coerceIn(120, 240)
@@ -376,7 +422,7 @@ private fun ComicApp() {
                 libraryEntries = repository.entries()
                 customCollections = repository.customCollections()
                 selectedFolderPath = null; selectedCustomCollection = null
-                folder?.let(::scan)
+                scan(folderUris)
                 toolsMessage = result.summary
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) { toolsMessage = failure.message ?: "Could not restore the backup." }
@@ -392,7 +438,7 @@ private fun ComicApp() {
             cleanupInactivePageSourceDirectories(context)
         }
     }
-    LaunchedEffect(folder) { folder?.let(::scan) }
+    LaunchedEffect(folderUris) { if (folderUris.isNotEmpty()) scan(folderUris) }
     LaunchedEffect(session.current?.startIndex, session.requestedPageIndex, session.totalPages) {
         seekDraft = (session.requestedPageIndex ?: session.current?.startIndex ?: 0).toFloat()
     }
@@ -546,7 +592,8 @@ private fun ComicApp() {
             lightMode, { lightMode = it; prefs.edit().putBoolean("lightMode", it).apply() },
             showReaderProgress, { showReaderProgress = it; prefs.edit().putBoolean("showReaderProgress", it).apply() },
             keepScreenAwake, { keepScreenAwake = it; prefs.edit().putBoolean("keepScreenAwake", it).apply() },
-            folder != null, { picker.launch(null) }, { folder?.let(::scan) }, { licenseDialog = true }) {
+            folderUris.map { uri -> DocumentFile.fromTreeUri(context, uri)?.name ?: "Comic folder" },
+            { picker.launch(null) }, { scan(folderUris) }, { index -> folderUris.getOrNull(index)?.let(::removeFolder) }, { licenseDialog = true }) {
             LibraryToolsPanel(panSensitivity, { panSensitivity = it; prefs.edit().putFloat("panSensitivity", it).apply() },
                 momentumStrength, { momentumStrength = it; prefs.edit().putFloat("momentumStrength", it).apply() },
                 coverStorageBytes, toolsBusy, toolsMessage,
@@ -587,7 +634,7 @@ when (destination) {
                                     libraryLoading, libraryMessage, books.isNotEmpty(), { startReading(it) }, { detailBook = it }, { picker.launch(null) })
                                 AppDestination.LIBRARY -> ComicLibraryScreen(shelfEntries.mapNotNull { entry -> booksByUri[entry.uri]?.let { it to entry } },
                                     diskCoverCache, searchQuery, { searchQuery = it }, filter, { filter = it }, sort, { sortOptionsVisible = true },
-                                    coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it }, scopeLabel, ::clearCollectionScope)
+                                    coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it }, scopeLabel, ::clearCollectionScope, libraryMessage)
                                 AppDestination.COLLECTIONS -> CollectionsExperience(collectionShelves, diskCoverCache, { shelf ->
                                     selectedFolderPath = shelf.folderPath; selectedCustomCollection = shelf.customName; destination = AppDestination.LIBRARY
                                 }, { createCollectionVisible = true })
@@ -604,7 +651,7 @@ when (destination) {
                                 libraryLoading, libraryMessage, books.isNotEmpty(), { startReading(it) }, { detailBook = it }, { picker.launch(null) })
                             AppDestination.LIBRARY -> ComicLibraryScreen(shelfEntries.mapNotNull { entry -> booksByUri[entry.uri]?.let { it to entry } },
                                 diskCoverCache, searchQuery, { searchQuery = it }, filter, { filter = it }, sort, { sortOptionsVisible = true },
-                                coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it }, scopeLabel, ::clearCollectionScope)
+                                coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it }, scopeLabel, ::clearCollectionScope, libraryMessage)
                             AppDestination.COLLECTIONS -> CollectionsExperience(collectionShelves, diskCoverCache, { shelf ->
                                 selectedFolderPath = shelf.folderPath; selectedCustomCollection = shelf.customName; destination = AppDestination.LIBRARY
                             }, { createCollectionVisible = true })
