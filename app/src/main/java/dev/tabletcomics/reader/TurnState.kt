@@ -8,7 +8,13 @@ import androidx.compose.runtime.snapshots.Snapshot
 import kotlin.math.abs
 import kotlin.math.sign
 
-internal data class TurnSnapshot(val current: ReaderUnit, val previous: ReaderUnit?, val next: ReaderUnit?) {
+internal data class TurnSnapshot(
+    val current: ReaderUnit,
+    val previous: ReaderUnit?,
+    val next: ReaderUnit?,
+    val cornerTurn: Boolean = false,
+    val cornerAtBottom: Boolean = false,
+) {
     /** Null is captured availability too; a late prefetch belongs to the next gesture. */
     fun neighbor(offset: Float, rightToLeft: Boolean): ReaderUnit? =
         if ((offset < 0f) xor rightToLeft) next else previous
@@ -30,9 +36,15 @@ internal class TurnState {
 
     val hasSnapshot: Boolean get() = snapshot != null
 
-    fun capture(current: ReaderUnit, previous: ReaderUnit?, next: ReaderUnit?) {
+    fun capture(
+        current: ReaderUnit,
+        previous: ReaderUnit?,
+        next: ReaderUnit?,
+        cornerTurn: Boolean = false,
+        cornerAtBottom: Boolean = false,
+    ) {
         if (settling || snapshot != null || committedUnit != null) return
-        snapshot = TurnSnapshot(current, previous, next)
+        snapshot = TurnSnapshot(current, previous, next, cornerTurn, cornerAtBottom)
     }
 
     fun dragTo(value: Float, hasNeighbor: Boolean) {

@@ -10,6 +10,20 @@ import org.junit.Test
 
 class TurnStateTest {
     @Test
+    fun gestureKeepsItsCornerPullOriginUntilItSettles() {
+        val state = TurnState()
+        state.capture(unit(0), null, unit(1), cornerTurn = true, cornerAtBottom = true)
+        state.dragTo(-140f, hasNeighbor = true)
+
+        assertTrue(state.snapshot!!.cornerTurn)
+        assertTrue(state.snapshot!!.cornerAtBottom)
+
+        state.reset()
+        state.capture(unit(0), null, unit(1))
+        assertFalse(state.snapshot!!.cornerTurn)
+    }
+
+    @Test
     fun completedTurnPublishesIncomingPageBeforeClearingOutgoingFrame() {
         val state = TurnState()
         val next = unit(1)

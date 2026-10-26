@@ -13,6 +13,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.test.swipeUp
 import dev.tabletcomics.ui.ComicsTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -21,6 +22,24 @@ import org.junit.Test
 class ReaderGestureInstrumentedTest {
     @get:Rule val compose = createComposeRule()
     private fun page(index: Int, color: Int) = ReaderUnit(index, listOf(index to Bitmap.createBitmap(64, 96, Bitmap.Config.ARGB_8888).apply { eraseColor(color) }))
+
+    @Test fun verticalReadingTurnsOnAnUpwardSwipe() {
+        val first = page(0, android.graphics.Color.RED)
+        val second = page(1, android.graphics.Color.BLUE)
+        val current = mutableStateOf(first)
+        var turns = 0
+        compose.setContent { ComicsTheme("violet") {
+            PageTurnReader(current.value, null, if (current.value.startIndex == 0) second else null, 2, false,
+                "vertical", "vertical-test", verticalReading = true,
+                onTurn = { turns++; current.value = it }, onToggleControls = {}, onEndReached = {},
+                onDecodeRegions = { _, regions, _ -> regions.map { null } },
+                modifier = Modifier.fillMaxSize().testTag("reader"))
+        } }
+
+        compose.onNodeWithTag("reader").performTouchInput { swipeUp() }
+
+        compose.runOnIdle { assertEquals(1, turns); assertEquals(1, current.value.startIndex) }
+    }
 
     @Test fun unloadedNextIsNotTheEndOfTheBook() {
         val current = page(0, android.graphics.Color.RED)

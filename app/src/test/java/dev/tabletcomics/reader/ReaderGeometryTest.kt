@@ -87,6 +87,24 @@ class ReaderGeometryTest {
     }
 
     @Test
+    fun verticalReadingCanPanUntilTheTopOrBottomEdgeThenTurn() {
+        val viewport = Size(1000f, 1000f)
+        val content = Rect(0f, -500f, 1000f, 1500f)
+
+        assertFalse(ZoomBounds.canTurnAtVerticalEdge(viewport, content, 1f, Offset.Zero, -1f))
+        assertTrue(ZoomBounds.canTurnAtVerticalEdge(viewport, content, 1f, Offset(0f, 500f), -1f))
+        assertTrue(ZoomBounds.canTurnAtVerticalEdge(viewport, content, 1f, Offset(0f, -500f), 1f))
+    }
+
+    @Test
+    fun onlyAFlowEdgeCornerStartsTheCurlGesture() {
+        assertTrue(isPageCornerStart(Offset(970f, 25f), -40f, false, 1000f, 800f, 80f))
+        assertTrue(isPageCornerStart(Offset(30f, 770f), -40f, true, 1000f, 800f, 80f))
+        assertFalse(isPageCornerStart(Offset(970f, 400f), -40f, false, 1000f, 800f, 80f))
+        assertFalse(isPageCornerStart(Offset(500f, 25f), -40f, false, 1000f, 800f, 80f))
+    }
+
+    @Test
     fun croppedSourceMappingAndVisibleRequestsUseTheSameFitGeometry() {
         val viewport = Size(1000f, 1000f)
         val crop = Rect(.05f, .1f, .95f, .9f)

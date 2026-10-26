@@ -74,6 +74,21 @@ internal object ZoomBounds {
         return if (dragDeltaX < 0f) boundedPan <= minPan + tolerance else boundedPan >= maxPan - tolerance
     }
 
+    fun canTurnAtVerticalEdge(
+        viewport: Size,
+        content: Rect,
+        scale: Float,
+        pan: Offset,
+        dragDeltaY: Float,
+        tolerance: Float = 1f,
+    ): Boolean {
+        if (viewport.height <= 0f || content.isEmpty || scale <= 0f || !dragDeltaY.isFinite() || dragDeltaY == 0f) return false
+        val (minPan, maxPan) = axisPanLimits(content.top, content.bottom, viewport.height, scale)
+        if (maxPan - minPan <= tolerance * 2f) return true
+        val boundedPan = pan.y.coerceIn(minPan, maxPan)
+        return if (dragDeltaY < 0f) boundedPan >= maxPan - tolerance else boundedPan <= minPan + tolerance
+    }
+
     private fun clampAxis(minContent: Float, maxContent: Float, viewport: Float, scale: Float, pan: Float): Float {
         val (minPan, maxPan) = axisPanLimits(minContent, maxContent, viewport, scale)
         return (if (pan.isFinite()) pan else 0f).coerceIn(minPan, maxPan)

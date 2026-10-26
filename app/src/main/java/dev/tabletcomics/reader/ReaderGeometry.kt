@@ -79,9 +79,26 @@ internal data class PixelRegion(val left: Int, val top: Int, val right: Int, val
     val width: Int get() = right - left
     val height: Int get() = bottom - top
     fun asFloatRect() = Rect(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat())
+
+    fun subtract(inner: PixelRegion): List<PixelRegion> {
+        val left = maxOf(this.left, inner.left)
+        val top = maxOf(this.top, inner.top)
+        val right = minOf(this.right, inner.right)
+        val bottom = minOf(this.bottom, inner.bottom)
+        if (left >= right || top >= bottom) return listOf(this)
+        return buildList {
+            if (this@PixelRegion.top < top) add(PixelRegion(this@PixelRegion.left, this@PixelRegion.top, this@PixelRegion.right, top))
+            if (bottom < this@PixelRegion.bottom) add(PixelRegion(this@PixelRegion.left, bottom, this@PixelRegion.right, this@PixelRegion.bottom))
+            if (this@PixelRegion.left < left) add(PixelRegion(this@PixelRegion.left, top, left, bottom))
+            if (right < this@PixelRegion.right) add(PixelRegion(right, top, this@PixelRegion.right, bottom))
+        }
+    }
 }
 internal data class TileRequest(val pageSlot: Int, val region: PixelRegion)
 internal data class TilePlan(val sampleSize: Int, val requests: List<TileRequest>)
+internal data class PrioritizedTilePlan(val visible: TilePlan, val buffer: TilePlan) {
+    val requests: List<TileRequest> get() = visible.requests + buffer.requests
+}
 
 internal object DetailTilePlanner {
     /** Bound allocations without truncating coverage. Interleave pages so neither half starves. */
@@ -116,6 +133,20 @@ internal object DetailTilePlanner {
             for (index in 0 until (byPage.maxOfOrNull { it.size } ?: 0)) byPage.forEach { it.getOrNull(index)?.let(::add) }
         }
         return TilePlan(sample, requests)
+    }
+
+    /** Nearby detail uses only the budget left after the screen area has been planned. */
+    fun planPrioritized(visible: List<PixelRegion?>, buffer: List<List<PixelRegion>>, maxTiles: Int = 20): PrioritizedTilePlan {
+        val primary = plan(visible, maxTiles)
+        val remaining = maxTiles - primary.requests.size
+        val flatBuffer = buffer.flatMapIndexed { pageSlot, regions -> regions.map { pageSlot to it } }
+        val secondary = if (flatBuffer.isNotEmpty() && remaining >= flatBuffer.size) {
+            val decoded = plan(flatBuffer.map { it.second }, remaining)
+            decoded.copy(requests = decoded.requests.map { request ->
+                TileRequest(flatBuffer[request.pageSlot].first, request.region)
+            })
+        } else TilePlan(1, emptyList())
+        return PrioritizedTilePlan(primary, secondary)
     }
 }
 

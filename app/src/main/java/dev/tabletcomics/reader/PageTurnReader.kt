@@ -33,6 +33,7 @@ import androidx.compose.ui.geometry.Rect as FloatRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -61,7 +62,7 @@ data class ReaderUnit(
     val fullResolutionPages: Map<Int, FullResolutionPage> = emptyMap(),
 )
 
-private data class DetailTile(val pageIndex: Int, val region: PixelRegion, val bitmap: Bitmap)
+private data class DetailTile(val pageIndex: Int, val region: PixelRegion, val bitmap: Bitmap, val sampleSize: Int)
 
 /** Neighbors are captured at gesture start. Progress is committed only after settling. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -74,6 +75,7 @@ fun PageTurnReader(
     rightToLeft: Boolean,
     layoutKey: String,
     bookKey: String,
+    verticalReading: Boolean = false,
     initialZoomScale: Float = 1f,
     onZoomScaleChanged: (Float) -> Unit = {},
     onTurn: (target: ReaderUnit) -> Unit,
@@ -119,6 +121,7 @@ fun PageTurnReader(
     val toggle = rememberUpdatedState(onToggleControls)
     val endReached = rememberUpdatedState(onEndReached)
     val decodeRegions = rememberUpdatedState(onDecodeRegions)
+    val flowRightToLeft = rightToLeft && !verticalReading
     val tracker = remember { VelocityTracker() }
     var motionJob by remember { mutableStateOf<Job?>(null) }
 
@@ -211,41 +214,59 @@ fun PageTurnReader(
 
     LaunchedEffect(current.startIndex, layoutKey, bookKey, viewport, zoomTransform, currentGeometry, current.fullResolutionPages) {
         if (viewport.width <= 0f || viewport.height <= 0f) return@LaunchedEffect
-        // Decode a small buffer around the screen so a normal pan exposes already-sharp pixels.
-        val visible = ReaderGeometry.visibleViewport(viewport, zoomTransform, detailOverscanFraction = .25f)
-        val regions = current.pages.mapIndexed { slot, (pageIndex, preview) ->
+        val visibleViewport = ReaderGeometry.visibleViewport(viewport, zoomTransform)
+        val bufferedViewport = ReaderGeometry.visibleViewport(viewport, zoomTransform, detailOverscanFraction = .75f)
+        val visibleRegions = current.pages.mapIndexed { slot, (pageIndex, preview) ->
             val source = current.fullResolutionPages[pageIndex]
             val geometry = currentGeometry.getOrNull(slot)
             val previewScale = geometry?.let { it.destination.width / it.crop.width / preview.width * zoomTransform.scale } ?: 0f
             if (source == null || geometry == null || previewScale <= 1.05f) null
-            else geometry.visibleSource(visible, Size(source.width.toFloat(), source.height.toFloat()))
+            else geometry.visibleSource(visibleViewport, Size(source.width.toFloat(), source.height.toFloat()))
         }
-        val plan = DetailTilePlanner.plan(regions)
+        val bufferRegions = current.pages.mapIndexed { slot, (pageIndex, _) ->
+            val source = current.fullResolutionPages[pageIndex]
+            val geometry = currentGeometry.getOrNull(slot)
+            val outer = if (source == null || geometry == null) null else
+                geometry.visibleSource(bufferedViewport, Size(source.width.toFloat(), source.height.toFloat()))
+            val inner = visibleRegions.getOrNull(slot)
+            if (outer != null && inner != null) outer.subtract(inner) else emptyList()
+        }
+        val plan = DetailTilePlanner.planPrioritized(visibleRegions, bufferRegions)
         if (plan.requests.isEmpty()) return@LaunchedEffect
         delay(90)
-        val result = mutableListOf<DetailTile>()
-        for ((slot, requests) in plan.requests.groupBy { it.pageSlot }) {
-            ensureActive()
-            val pageIndex = current.pages[slot].first
-            val source = current.fullResolutionPages[pageIndex] ?: continue
-            val androidRegions = requests.map { it.region.let { region -> Rect(region.left, region.top, region.right, region.bottom) } }
-            decodeRegions.value(source, androidRegions, plan.sampleSize).forEachIndexed { index, bitmap ->
-                if (bitmap != null && index < requests.size) result += DetailTile(pageIndex, requests[index].region, bitmap)
+        suspend fun decode(plan: TilePlan): List<DetailTile> {
+            val result = mutableListOf<DetailTile>()
+            for ((slot, requests) in plan.requests.groupBy { it.pageSlot }) {
+                ensureActive()
+                val pageIndex = current.pages[slot].first
+                val source = current.fullResolutionPages[pageIndex] ?: continue
+                val androidRegions = requests.map { it.region.let { region -> Rect(region.left, region.top, region.right, region.bottom) } }
+                decodeRegions.value(source, androidRegions, plan.sampleSize).forEachIndexed { index, bitmap ->
+                    if (bitmap != null && index < requests.size) result += DetailTile(pageIndex, requests[index].region, bitmap, plan.sampleSize)
+                }
             }
+            return result
         }
+        val visibleTiles = decode(plan.visible)
         ensureActive()
-        detailTiles = result
+        if (visibleTiles.isNotEmpty()) detailTiles = visibleTiles
+        val bufferTiles = decode(plan.buffer)
+        ensureActive()
+        val completeTiles = visibleTiles + bufferTiles
+        if (completeTiles.isNotEmpty()) detailTiles = completeTiles
     }
 
     fun neighborFor(offset: Float): ReaderUnit? {
         val frame = turnState.snapshot
-        if (frame != null) return frame.neighbor(offset, rightToLeft)
-        return if ((offset < 0f) xor rightToLeft) latestNext.value else latestPrevious.value
+        if (frame != null) return frame.neighbor(offset, flowRightToLeft)
+        return if ((offset < 0f) xor flowRightToLeft) latestNext.value else latestPrevious.value
     }
 
     fun settle(velocity: Float, cancelled: Boolean = false) {
-        val captured = turnState.release(velocity / density, width, rightToLeft, cancelled) ?: return
-        val remaining = (abs(captured.destination - captured.start) / width).coerceIn(0f, 1f)
+        val extent = if (verticalReading) viewport.height else width
+        val flowRightToLeft = rightToLeft && !verticalReading
+        val captured = turnState.release(velocity / density, extent, flowRightToLeft, cancelled) ?: return
+        val remaining = (abs(captured.destination - captured.start) / extent).coerceIn(0f, 1f)
         settleJob = scope.launch {
             try {
                 animate(captured.start, captured.destination, animationSpec = tween((100 + remaining * 140).toInt())) { value, _ ->
@@ -264,7 +285,7 @@ fun PageTurnReader(
     Box(modifier.fillMaxSize().clipToBounds().onSizeChanged {
         width = it.width.toFloat()
         viewport = Size(it.width.toFloat(), it.height.toFloat())
-    }.pointerInput(current.startIndex, layoutKey, rightToLeft, bookKey, fitMode, cropBorders) {
+    }.pointerInput(current.startIndex, layoutKey, rightToLeft, verticalReading, bookKey, fitMode, cropBorders) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             motionJob?.cancel()
@@ -279,6 +300,8 @@ fun PageTurnReader(
             val zoomEdgeSwipe = ZoomEdgeSwipe()
             var cancelled = false
             var forwardBoundaryOffset: Float? = null
+            val extent = if (verticalReading) viewport.height else width
+            val cornerSize = 72f * density
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 val change = event.changes.firstOrNull { it.id == down.id }
@@ -294,25 +317,32 @@ fun PageTurnReader(
                 lastPosition = change.position
                 tracker.addPosition(change.uptimeMillis, change.position)
                 val movement = change.position - down.position
+                val axisMovement = if (verticalReading) movement.y else movement.x
+                val axisDelta = if (verticalReading) pointerDelta.y else pointerDelta.x
+                val crossMovement = if (verticalReading) movement.x else movement.y
+                val crossDelta = if (verticalReading) pointerDelta.x else pointerDelta.y
                 if (!change.pressed) {
                     val velocity = tracker.calculateVelocity()
                     if (dragging) {
                         val boundaryOffset = forwardBoundaryOffset
-                        settle(velocity.x)
+                        settle(if (verticalReading) velocity.y else velocity.x)
                         if (boundaryOffset != null && TurnNavigation.shouldComplete(
-                                boundaryOffset / density, velocity.x / density, width / density,
+                                boundaryOffset / density,
+                                (if (verticalReading) velocity.y else velocity.x) / density,
+                                extent / density,
                             )) endReached.value()
                     } else if (panning) glide(Offset(velocity.x, velocity.y))
                     break
                 }
                 val content = contentFor(latestCurrent.value)
                 if (ZoomBounds.hasOverflow(viewport, content, zoomTransform.scale) && !dragging) {
-                    // A mostly vertical reading drag must not become an edge turn due to jitter.
-                    val horizontal = abs(movement.x) > abs(movement.y) * 1.2f && abs(pointerDelta.x) > abs(pointerDelta.y)
-                    val canTurn = horizontal && ZoomBounds.canTurnAtHorizontalEdge(
-                        viewport, content, zoomTransform.scale, zoomTransform.pan, pointerDelta.x,
-                    )
-                    val edgeOffset = zoomEdgeSwipe.drag(pointerDelta.x, canTurn, viewConfiguration.touchSlop)
+                    val alongAxis = abs(axisMovement) > abs(crossMovement) * 1.2f && abs(axisDelta) > abs(crossDelta)
+                    val canTurn = alongAxis && if (verticalReading) {
+                        ZoomBounds.canTurnAtVerticalEdge(viewport, content, zoomTransform.scale, zoomTransform.pan, axisDelta)
+                    } else {
+                        ZoomBounds.canTurnAtHorizontalEdge(viewport, content, zoomTransform.scale, zoomTransform.pan, axisDelta)
+                    }
+                    val edgeOffset = zoomEdgeSwipe.drag(axisDelta, canTurn, viewConfiguration.touchSlop)
                     if (edgeOffset == null) {
                         if (panning || movement.getDistance() > viewConfiguration.touchSlop) {
                             val delta = if (panning) pointerDelta else movement * (1f - viewConfiguration.touchSlop / movement.getDistance())
@@ -323,18 +353,20 @@ fun PageTurnReader(
                         continue
                     }
                     dragging = true
-                    dragOrigin = movement.x - edgeOffset
-                    turnState.capture(latestCurrent.value, latestPrevious.value, latestNext.value)
+                    dragOrigin = axisMovement - edgeOffset
+                    val corner = !verticalReading && isPageCornerStart(down.position, axisMovement, rightToLeft, width, viewport.height, cornerSize)
+                    turnState.capture(latestCurrent.value, latestPrevious.value, latestNext.value, corner, down.position.y > viewport.height / 2f)
                 }
-                if (!dragging && abs(movement.x) > viewConfiguration.touchSlop && abs(movement.x) > abs(movement.y)) {
+                if (!dragging && abs(axisMovement) > viewConfiguration.touchSlop && abs(axisMovement) > abs(crossMovement)) {
                     dragging = true
-                    dragOrigin = sign(movement.x) * viewConfiguration.touchSlop
-                    turnState.capture(latestCurrent.value, latestPrevious.value, latestNext.value)
+                    dragOrigin = sign(axisMovement) * viewConfiguration.touchSlop
+                    val corner = !verticalReading && isPageCornerStart(down.position, axisMovement, rightToLeft, width, viewport.height, cornerSize)
+                    turnState.capture(latestCurrent.value, latestPrevious.value, latestNext.value, corner, down.position.y > viewport.height / 2f)
                 }
                 if (dragging) {
-                    val proposed = TurnNavigation.offsetAfterTouchSlop(movement.x, dragOrigin).coerceIn(-width, width)
+                    val proposed = TurnNavigation.offsetAfterTouchSlop(axisMovement, dragOrigin).coerceIn(-extent, extent)
                     val hasNeighbor = neighborFor(proposed) != null
-                    val forward = (proposed < 0f) xor rightToLeft
+                    val forward = if (verticalReading) proposed < 0f else (proposed < 0f) xor rightToLeft
                     val frame = turnState.snapshot
                     forwardBoundaryOffset = if (!hasNeighbor && forward && frame != null && isActualForwardEnd(frame.current, latestTotalPages.value)) proposed else null
                     turnState.dragTo(proposed, hasNeighbor = hasNeighbor)
@@ -352,17 +384,21 @@ fun PageTurnReader(
             val frame = turnState.snapshot
             val drag = turnState.offset
             val drawnCurrent = turnState.committedUnit ?: frame?.current ?: latestCurrent.value
-            val target = if (frame != null) frame.neighbor(drag, rightToLeft) else neighborFor(drag)
+            val target = if (frame != null) frame.neighbor(drag, flowRightToLeft) else neighborFor(drag)
             val geometry = geometryFor(drawnCurrent)
             if (abs(drag) < .1f || target == null) {
-                drawViewportUnit(drawnCurrent, geometry, 0f, zoomTransform, detailTiles)
+                drawViewportUnit(drawnCurrent, geometry, 0f, zoomTransform, detailTiles, verticalReading)
             } else {
                 val targetGeometry = geometryFor(target)
+                val axisSize = if (verticalReading) size.height else size.width
                 val targetZoom = ZoomBounds.pageStart(
                     if (latestKeepZoom.value) zoomTransform.scale else 1f, size, ReaderGeometry.bounds(targetGeometry),
                 )
-                drawViewportUnit(target, targetGeometry, ZoomBounds.pageTurnNeighborOffset(drag, size.width, 1f), targetZoom)
-                drawViewportUnit(drawnCurrent, geometry, drag, zoomTransform)
+                drawViewportUnit(target, targetGeometry, ZoomBounds.pageTurnNeighborOffset(drag, axisSize, 1f), targetZoom, verticalReading = verticalReading)
+                drawViewportUnit(drawnCurrent, geometry, drag, zoomTransform, verticalReading = verticalReading)
+                if (frame?.cornerTurn == true && !verticalReading) {
+                    drawCornerFold(drag, size, frame.cornerAtBottom, rightToLeft)
+                }
             }
         }
         if (zoomTransform.scale > 1.01f && showZoomReset) {
@@ -376,6 +412,40 @@ fun PageTurnReader(
 
 private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
+internal fun isPageCornerStart(
+    down: Offset, movement: Float, rightToLeft: Boolean, width: Float, height: Float, cornerSize: Float,
+): Boolean {
+    val startAtRight = (movement < 0f) xor rightToLeft
+    val nearHorizontalEdge = if (startAtRight) width - down.x <= cornerSize else down.x <= cornerSize
+    return nearHorizontalEdge && (down.y <= cornerSize || height - down.y <= cornerSize)
+}
+
+/** A restrained paper fold follows a corner pull without wrapping the page into a cylinder. */
+private fun DrawScope.drawCornerFold(drag: Float, size: Size, atBottom: Boolean, rightToLeft: Boolean) {
+    val amount = abs(drag).coerceAtMost(size.width)
+    if (amount < 1f) return
+    val onRight = (drag < 0f) xor rightToLeft
+    val x = if (onRight) (size.width + drag).coerceIn(0f, size.width) else drag.coerceIn(0f, size.width)
+    val y = if (atBottom) size.height else 0f
+    val foldWidth = (amount * .58f).coerceAtMost(size.width * .24f)
+    val foldHeight = (amount * .48f).coerceAtMost(size.height * .2f)
+    if (foldWidth < 1f || foldHeight < 1f) return
+    val inwardX = if (onRight) -foldWidth else foldWidth
+    val inwardY = if (atBottom) -foldHeight else foldHeight
+    val path = Path().apply {
+        moveTo(x, y)
+        lineTo(x + inwardX, y)
+        quadraticTo(x + inwardX * .3f, y + inwardY * .3f, x, y + inwardY)
+        close()
+    }
+    drawPath(path, Brush.linearGradient(listOf(Color(0xFFE9E3D8), Color(0xFF9C958B)), start = Offset(x, y), end = Offset(x + inwardX, y + inwardY)))
+    val crease = Path().apply {
+        moveTo(x + inwardX, y)
+        quadraticTo(x + inwardX * .45f, y + inwardY * .55f, x, y + inwardY)
+    }
+    drawPath(crease, Color.Black.copy(alpha = .34f), style = Stroke(width = 2.dp.toPx()))
+}
+
 /** Clip before scaling so a zoomed outgoing page cannot overlap the incoming viewport. */
 private fun DrawScope.drawViewportUnit(
     unit: ReaderUnit,
@@ -383,10 +453,22 @@ private fun DrawScope.drawViewportUnit(
     screenOffset: Float,
     zoom: ZoomTransform,
     tiles: List<DetailTile> = emptyList(),
+    verticalReading: Boolean = false,
 ) {
-    clipRect(left = screenOffset, top = 0f, right = screenOffset + size.width, bottom = size.height) {
+    if (verticalReading) clipRect(left = 0f, top = screenOffset, right = size.width, bottom = screenOffset + size.height) {
+        drawUnitContent(unit, geometry, screenOffset, zoom, tiles, true)
+    } else clipRect(left = screenOffset, top = 0f, right = screenOffset + size.width, bottom = size.height) {
+        drawUnitContent(unit, geometry, screenOffset, zoom, tiles, false)
+    }
+}
+
+private fun DrawScope.drawUnitContent(
+    unit: ReaderUnit, geometry: List<PageGeometry>, screenOffset: Float, zoom: ZoomTransform,
+    tiles: List<DetailTile>, verticalReading: Boolean,
+) {
         withTransform({
-            translate(left = screenOffset + zoom.pan.x, top = zoom.pan.y)
+            translate(left = if (verticalReading) zoom.pan.x else screenOffset + zoom.pan.x,
+                top = if (verticalReading) screenOffset + zoom.pan.y else zoom.pan.y)
             scale(zoom.scale, zoom.scale, pivot = Offset(size.width / 2f, size.height / 2f))
         }) {
             drawRect(Color.Black)
@@ -398,7 +480,7 @@ private fun DrawScope.drawViewportUnit(
                     drawFloatingBitmap(bitmap, full)
                 }
             }
-            tiles.forEach { tile ->
+            tiles.sortedByDescending { it.sampleSize }.forEach { tile ->
                 val slot = unit.pages.indexOfFirst { it.first == tile.pageIndex }
                 val page = geometry.getOrNull(slot) ?: return@forEach
                 val source = unit.fullResolutionPages[tile.pageIndex] ?: return@forEach
@@ -408,7 +490,6 @@ private fun DrawScope.drawViewportUnit(
                 }
             }
         }
-    }
 }
 
 /** Android's RectF destinations preserve shared source boundaries without independent integer rounding. */

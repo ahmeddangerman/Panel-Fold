@@ -47,6 +47,35 @@ class DetailTilePlannerTest {
         assertCoverage(regions, DetailTilePlanner.plan(regions))
     }
 
+    @Test
+    fun nearbyPrefetchUsesRemainingTileBudgetWithoutReducingVisibleResolution() {
+        val visible = listOf(PixelRegion(1000, 1000, 2000, 2000))
+        val ring = listOf(PixelRegion(500, 500, 2500, 2500).subtract(visible.single()))
+        val plan = DetailTilePlanner.planPrioritized(visible, ring)
+
+        assertEquals(1, plan.visible.sampleSize)
+        assertTrue(plan.buffer.sampleSize >= plan.visible.sampleSize)
+        assertTrue(plan.requests.size <= 20)
+        assertCoverage(visible, plan.visible)
+        assertTrue(plan.buffer.requests.all { tile ->
+            !(
+            tile.region.left < visible.single().right && tile.region.right > visible.single().left &&
+                tile.region.top < visible.single().bottom && tile.region.bottom > visible.single().top
+            )
+        })
+    }
+
+    @Test
+    fun visibleTilesUseTheWholeBudgetWhenThereIsNotRoomForEveryBufferSection() {
+        val visible = listOf(PixelRegion(1000, 1000, 5096, 5096))
+        val ring = listOf(List(8) { index -> PixelRegion(index * 512, 0, index * 512 + 256, 256) })
+
+        val plan = DetailTilePlanner.planPrioritized(visible, ring)
+
+        assertTrue(plan.buffer.requests.isEmpty())
+        assertTrue(plan.visible.requests.size <= 20)
+    }
+
     private fun assertCoverage(regions: List<PixelRegion?>, plan: TilePlan) {
         assertTrue(plan.sampleSize > 0 && (plan.sampleSize and (plan.sampleSize - 1)) == 0)
         assertTrue(plan.requests.size <= 20)

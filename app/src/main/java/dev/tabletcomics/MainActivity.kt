@@ -161,6 +161,7 @@ private fun ComicApp() {
     var licenseDialog by remember { mutableStateOf(false) }
     var seekDraft by remember { mutableFloatStateOf(0f) }
     var rightToLeft by remember { mutableStateOf(false) }
+    var verticalReading by remember { mutableStateOf(false) }
     var spreads by remember { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(LibraryFilter.ALL) }
@@ -196,7 +197,7 @@ private fun ComicApp() {
     var currentIsBookmarked by remember { mutableStateOf(false) }
     val config = LocalConfiguration.current
     val landscape = config.screenWidthDp > config.screenHeightDp
-    val spreadMode = landscape && spreads
+    val spreadMode = landscape && spreads && !verticalReading
 
     fun scan(uri: Uri) {
         val generation = scanGeneration.begin()
@@ -417,9 +418,13 @@ private fun ComicApp() {
     }
     LaunchedEffect(session, currentBook) {
         val book = currentBook ?: return@LaunchedEffect
-        rightToLeft = prefs.getBoolean("rtl:${book.uri}", false)
-        spreads = prefs.getBoolean("spreads:${book.uri}", false)
-        session.open(book.uri, book.format, activeReaderState.value.logicalPage, spreads && landscape, rightToLeft)
+        val savedRtl = prefs.getBoolean("rtl:${book.uri}", false)
+        val savedVertical = prefs.getBoolean("vertical:${book.uri}", false)
+        val savedSpreads = prefs.getBoolean("spreads:${book.uri}", false)
+        rightToLeft = savedRtl
+        verticalReading = savedVertical
+        spreads = savedSpreads
+        session.open(book.uri, book.format, activeReaderState.value.logicalPage, savedSpreads && landscape && !savedVertical, savedRtl && !savedVertical)
     }
     LaunchedEffect(session.requiresFolderReselection, currentBook) {
         if (session.requiresFolderReselection && currentBook != null) {
@@ -427,7 +432,7 @@ private fun ComicApp() {
             closeBook()
         }
     }
-    LaunchedEffect(spreadMode, rightToLeft) { if (currentBook != null) session.reconfigure(spreadMode, rightToLeft) }
+    LaunchedEffect(spreadMode, rightToLeft, verticalReading) { if (currentBook != null) session.reconfigure(spreadMode && !verticalReading, rightToLeft && !verticalReading) }
     DisposableEffect(session) { onDispose { session.dispose() } }
     BackHandler(enabled = currentBook != null) {
         when {
@@ -619,8 +624,8 @@ when (destination) {
         } else {
             Box(Modifier.fillMaxSize().background(Color.Black)) {
                 session.current?.let { unit ->
-                    PageTurnReader(unit, session.previous, session.next, rightToLeft = rightToLeft,
-                        layoutKey = "$landscape:$spreadMode:$rightToLeft",
+                    PageTurnReader(unit, session.previous, session.next, rightToLeft = rightToLeft, verticalReading = verticalReading,
+                        layoutKey = "$landscape:$spreadMode:$rightToLeft:$verticalReading",
                         bookKey = currentBook.uri.toString(),
                         totalPages = session.totalPages,
                         fitMode = fitMode, cropBorders = cropBorders, keepZoom = keepZoom,
@@ -695,7 +700,8 @@ when (destination) {
                         }
                         Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = .94f), shape = RoundedCornerShape(22.dp), shadowElevation = 12.dp) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { turn(rightToLeft) }, enabled = rightToLeft || session.previous != null) { Text("‹", style = MaterialTheme.typography.headlineSmall) }
+                                val leadingForward = !verticalReading && rightToLeft
+                                IconButton(onClick = { turn(leadingForward) }, enabled = if (leadingForward) session.next != null else session.previous != null) { Text(if (verticalReading) "↓" else "‹", style = MaterialTheme.typography.headlineSmall) }
                                 if (session.totalPages > 1) Slider(value = seekDraft.coerceIn(0f, (session.totalPages - 1).toFloat()),
                                     onValueChange = { seekDraft = it }, onValueChangeFinished = {
                                         val target = SeekState(draftIndex = seekDraft.roundToInt()).destination(session.totalPages, spreadMode)
@@ -703,7 +709,8 @@ when (destination) {
                                     }, valueRange = 0f..(session.totalPages - 1).toFloat(), modifier = Modifier.weight(1f))
                                 val shownPage = session.requestedPageIndex ?: session.current!!.startIndex
                                 Text("${shownPage + 1}/${session.totalPages}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
-                                IconButton(onClick = { turn(!rightToLeft) }, enabled = !rightToLeft || session.previous != null) { Text("›", style = MaterialTheme.typography.headlineSmall) }
+                                val trailingForward = verticalReading || !rightToLeft
+                                IconButton(onClick = { turn(trailingForward) }, enabled = if (trailingForward) session.next != null else session.previous != null) { Text(if (verticalReading) "↑" else "›", style = MaterialTheme.typography.headlineSmall) }
                                 TextButton(onClick = { showPageThumbnails = !showPageThumbnails }) { Text("Pages") }
                                 TextButton(onClick = { readerOptionsVisible = true }) { Text("Options") }
                             }
@@ -734,10 +741,27 @@ when (destination) {
                             keepZoom = it; currentBook?.let { book -> prefs.edit().putBoolean("keepZoom:${book.uri}", it).apply() }
                         })
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Read right to left", Modifier.weight(1f)); Switch(rightToLeft, {
-                        rightToLeft = it; currentBook?.let { book -> prefs.edit().putBoolean("rtl:${book.uri}", it).apply() }
-                    }) }
-                    if (landscape) Row(verticalAlignment = Alignment.CenterVertically) { Text("Two-page spreads", Modifier.weight(1f)); Switch(spreads, {
+                    Text("Reading direction", style = MaterialTheme.typography.titleSmall)
+                    listOf("Left to right", "Right to left", "Vertical").forEachIndexed { index, label ->
+                        val selected = when (index) { 0 -> !rightToLeft && !verticalReading; 1 -> rightToLeft && !verticalReading; else -> verticalReading }
+                        Row(Modifier.fillMaxWidth().clickable {
+                            rightToLeft = index == 1
+                            verticalReading = index == 2
+                            currentBook?.let { book -> prefs.edit()
+                                .putBoolean("rtl:${book.uri}", rightToLeft)
+                                .putBoolean("vertical:${book.uri}", verticalReading).apply() }
+                        }, verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = selected, onClick = {
+                                rightToLeft = index == 1
+                                verticalReading = index == 2
+                                currentBook?.let { book -> prefs.edit()
+                                    .putBoolean("rtl:${book.uri}", rightToLeft)
+                                    .putBoolean("vertical:${book.uri}", verticalReading).apply() }
+                            })
+                            Text(label)
+                        }
+                    }
+                    if (landscape && !verticalReading) Row(verticalAlignment = Alignment.CenterVertically) { Text("Two-page spreads", Modifier.weight(1f)); Switch(spreads, {
                         spreads = it; currentBook?.let { book -> prefs.edit().putBoolean("spreads:${book.uri}", it).apply() }
                     }) }
                     Row(verticalAlignment = Alignment.CenterVertically) { Text("Keep screen awake", Modifier.weight(1f)); Switch(keepScreenAwake, {
