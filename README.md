@@ -1,12 +1,12 @@
-# Tablet Comics
+# PanelFlow
 
-An offline Android tablet comic reader written in Kotlin and Jetpack Compose.
+An offline Android tablet comic and manga reader written in Kotlin and Jetpack Compose.
 
 ## Open and build
 
 Open this directory in Android Studio with JDK 17. Install Android SDK Platform 35, NDK 27.2.12479018, and CMake 3.22.1. The Android Gradle Plugin is pinned to 8.7.3, and the Gradle 8.9 wrapper is included. Build the `app` debug variant with `./gradlew :app:assembleDebug` or from Android Studio.
 
-The signed beta 0.6.1 APK is available at [releases/tablet-comics-0.6.1-beta.apk](releases/tablet-comics-0.6.1-beta.apk). Build/install verification is recorded in [the stabilization results](docs/beta-stabilization-results.md). It targets Android API 35, supports devices from API 26, and includes the Android build's supported ABIs. MatePad Pro / HarmonyOS behavior has not been verified on a physical device. To try it, transfer the APK to the tablet and open it, allowing installation from that source when prompted.
+The current source is beta **0.6.1**. Build/install verification is recorded in [the stabilization results](docs/beta-stabilization-results.md). It targets Android API 35 and supports devices from API 26. MatePad Pro / HarmonyOS behavior has not been verified on a physical device.
 
 ## Features
 
@@ -41,4 +41,8 @@ The current debug signer is preserved in the Git-ignored `.signing/current.keyst
 
 Build with JDK17/21 and the SDK/NDK versions above, then run `scripts/sign-beta.sh` after `:app:assembleRelease` to generate the signed beta. To use an independent release credential, supply `TABLET_COMICS_KEYSTORE`, `TABLET_COMICS_STORE_PASSWORD`, `TABLET_COMICS_KEY_ALIAS` and `TABLET_COMICS_KEY_PASSWORD`; the Gradle release signing config reads these environment variables. No passwords or private key bytes are stored in source.
 
-The project is a local Git repository. A GitHub remote has not been chosen; a local commit is not an off-machine backup.
+## License
+
+Original PanelFlow source is offered under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, modify, and share it for noncommercial purposes. Commercial use requires a separate license from the copyright holder. This is source-available software, not an OSI-approved open-source license. Third-party components remain under their own licenses; see [third_party_licenses](third_party_licenses/).
+
+The source repository is [github.com/ahmeddangerman/Panel-Fold](https://github.com/ahmeddangerman/Panel-Fold). Build and device verification details are in [the stabilization results](docs/beta-stabilization-results.md).

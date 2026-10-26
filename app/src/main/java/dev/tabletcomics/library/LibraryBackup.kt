@@ -117,7 +117,7 @@ internal object LibraryBackupCodec {
             val tokener = JSONTokener(source)
             val json = tokener.nextValue() as? JSONObject ?: throw IllegalArgumentException("Backup must be a JSON object")
             require(tokener.nextClean() == '\u0000') { "Unexpected content after backup" }
-            require(json.get("kind") == KIND) { "This is not a Tablet Comics backup" }
+            require(json.get("kind") == KIND) { "This is not a PanelFlow backup" }
             require(exactInt(json.get("version"), 0, Int.MAX_VALUE, "version") == VERSION) { "Unsupported backup version" }
             val createdAt = exactLong(json.get("createdAt"), 0, Long.MAX_VALUE, "createdAt")
             val collections = strings(json.getJSONArray("collections"), BackupLimits.MAX_COLLECTIONS, "collections", 256)

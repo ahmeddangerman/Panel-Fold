@@ -567,7 +567,7 @@ private fun ComicApp() {
                 if (wideLayout) {
                     Row(Modifier.fillMaxSize()) {
                         NavigationRail(containerColor = MaterialTheme.colorScheme.background, header = {
-                            Image(painterResource(R.drawable.ic_brand_logo), contentDescription = "Tablet Comics", modifier = Modifier.padding(vertical = 20.dp).size(42.dp))
+                            Image(painterResource(R.drawable.ic_brand_logo), contentDescription = "PanelFlow", modifier = Modifier.padding(vertical = 20.dp).size(42.dp))
                         }) {
                             AppDestination.entries.forEach { item ->
                                 NavigationRailItem(selected = destination == item, onClick = { navigateTo(item) },
@@ -777,7 +777,7 @@ when (destination) {
                 title = { Text("About & third-party licenses") },
                 text = {
                     Text(
-                        "RAR support uses RARLab UnRAR 7.30 beta 1 under the included UnRAR license. Tablet Comics reads and extracts existing RAR archives; it does not create RAR archives.\n\n$license",
+                        "RAR support uses RARLab UnRAR 7.30 beta 1 under the included UnRAR license. PanelFlow reads and extracts existing RAR archives; it does not create RAR archives.\n\n$license",
                         modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
                     )
                 },
