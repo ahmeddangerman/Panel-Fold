@@ -86,7 +86,7 @@ internal object ZoomBounds {
         val (minPan, maxPan) = axisPanLimits(content.top, content.bottom, viewport.height, scale)
         if (maxPan - minPan <= tolerance * 2f) return true
         val boundedPan = pan.y.coerceIn(minPan, maxPan)
-        return if (dragDeltaY < 0f) boundedPan >= maxPan - tolerance else boundedPan <= minPan + tolerance
+        return if (dragDeltaY < 0f) boundedPan <= minPan + tolerance else boundedPan >= maxPan - tolerance
     }
 
     private fun clampAxis(minContent: Float, maxContent: Float, viewport: Float, scale: Float, pan: Float): Float {

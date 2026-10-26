@@ -10,17 +10,43 @@ import org.junit.Test
 
 class TurnStateTest {
     @Test
+    fun cornerLocationKeepsItsTargetWhenTheFingerReversesInEitherReadingDirection() {
+        val previous = unit(0)
+        val current = unit(1)
+        val next = unit(2)
+        for (corner in PageCorner.entries) for (rtl in listOf(false, true)) {
+            val frame = TurnSnapshot(current, previous, next, corner)
+            val expected = if (corner.isRight xor rtl) next else previous
+            assertSame(expected, frame.neighbor(-100f, rtl))
+            assertSame(expected, frame.neighbor(100f, rtl))
+        }
+    }
+
+    @Test
+    fun cancelledCornerPullClearsItsPositionWithoutCommitting() {
+        val state = TurnState()
+        state.capture(unit(0), null, unit(1), PageCorner.BOTTOM_RIGHT)
+        state.moveCorner(androidx.compose.ui.geometry.Offset(120f, 240f))
+        state.dragTo(-200f, true)
+        state.release(0f, 400f, false, cancelled = true)
+
+        assertNull(state.completeSettle())
+        assertNull(state.draggedCorner)
+        assertNull(state.committedUnit)
+        assertNull(state.snapshot)
+    }
+
+    @Test
     fun gestureKeepsItsCornerPullOriginUntilItSettles() {
         val state = TurnState()
-        state.capture(unit(0), null, unit(1), cornerTurn = true, cornerAtBottom = true)
+        state.capture(unit(0), null, unit(1), corner = PageCorner.BOTTOM_RIGHT)
         state.dragTo(-140f, hasNeighbor = true)
 
-        assertTrue(state.snapshot!!.cornerTurn)
-        assertTrue(state.snapshot!!.cornerAtBottom)
+        assertEquals(PageCorner.BOTTOM_RIGHT, state.snapshot!!.corner)
 
         state.reset()
         state.capture(unit(0), null, unit(1))
-        assertFalse(state.snapshot!!.cornerTurn)
+        assertNull(state.snapshot!!.corner)
     }
 
     @Test

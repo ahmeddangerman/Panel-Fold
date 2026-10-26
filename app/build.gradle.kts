@@ -12,8 +12,8 @@ android {
         applicationId = "dev.tabletcomics"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.6.3-beta"
+        versionCode = 20
+        versionName = "0.6.4-beta"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64") }
     }

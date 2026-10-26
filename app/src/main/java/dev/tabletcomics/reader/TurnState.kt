@@ -1,5 +1,7 @@
 package dev.tabletcomics.reader
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -12,12 +14,12 @@ internal data class TurnSnapshot(
     val current: ReaderUnit,
     val previous: ReaderUnit?,
     val next: ReaderUnit?,
-    val cornerTurn: Boolean = false,
-    val cornerAtBottom: Boolean = false,
+    val corner: PageCorner? = null,
+    val foldBounds: Rect? = null,
 ) {
     /** Null is captured availability too; a late prefetch belongs to the next gesture. */
     fun neighbor(offset: Float, rightToLeft: Boolean): ReaderUnit? =
-        if ((offset < 0f) xor rightToLeft) next else previous
+        if ((corner?.isRight ?: (offset < 0f)) xor rightToLeft) next else previous
 }
 internal data class TurnSettle(val start: Float, val destination: Float, val target: ReaderUnit?)
 
@@ -28,6 +30,8 @@ internal class TurnState {
     var offset: Float by mutableFloatStateOf(0f)
         private set
     var settling: Boolean by mutableStateOf(false)
+        private set
+    var draggedCorner: Offset? by mutableStateOf(null)
         private set
     private var pendingTarget: ReaderUnit? = null
     var committedUnit: ReaderUnit? by mutableStateOf(null)
@@ -40,11 +44,11 @@ internal class TurnState {
         current: ReaderUnit,
         previous: ReaderUnit?,
         next: ReaderUnit?,
-        cornerTurn: Boolean = false,
-        cornerAtBottom: Boolean = false,
+        corner: PageCorner? = null,
+        foldBounds: Rect? = null,
     ) {
         if (settling || snapshot != null || committedUnit != null) return
-        snapshot = TurnSnapshot(current, previous, next, cornerTurn, cornerAtBottom)
+        snapshot = TurnSnapshot(current, previous, next, corner, foldBounds)
     }
 
     fun dragTo(value: Float, hasNeighbor: Boolean) {
@@ -78,6 +82,10 @@ internal class TurnState {
         if (settling) offset = value
     }
 
+    fun moveCorner(point: Offset) {
+        if (snapshot?.corner != null) draggedCorner = point
+    }
+
     fun completeSettle(onCommit: (ReaderUnit) -> Unit = {}): ReaderUnit? = Snapshot.withMutableSnapshot {
         val target = pendingTarget
         // Publish the incoming page and its zoom before removing the outgoing frame.
@@ -106,6 +114,7 @@ internal class TurnState {
 
     fun clearGesture() {
         snapshot = null
+        draggedCorner = null
         offset = 0f
         settling = false
         pendingTarget = null

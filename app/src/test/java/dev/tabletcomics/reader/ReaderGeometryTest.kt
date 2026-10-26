@@ -92,16 +92,9 @@ class ReaderGeometryTest {
         val content = Rect(0f, -500f, 1000f, 1500f)
 
         assertFalse(ZoomBounds.canTurnAtVerticalEdge(viewport, content, 1f, Offset.Zero, -1f))
-        assertTrue(ZoomBounds.canTurnAtVerticalEdge(viewport, content, 1f, Offset(0f, 500f), -1f))
-        assertTrue(ZoomBounds.canTurnAtVerticalEdge(viewport, content, 1f, Offset(0f, -500f), 1f))
-    }
-
-    @Test
-    fun onlyAFlowEdgeCornerStartsTheCurlGesture() {
-        assertTrue(isPageCornerStart(Offset(970f, 25f), -40f, false, 1000f, 800f, 80f))
-        assertTrue(isPageCornerStart(Offset(30f, 770f), -40f, true, 1000f, 800f, 80f))
-        assertFalse(isPageCornerStart(Offset(970f, 400f), -40f, false, 1000f, 800f, 80f))
-        assertFalse(isPageCornerStart(Offset(500f, 25f), -40f, false, 1000f, 800f, 80f))
+        assertFalse(ZoomBounds.canTurnAtVerticalEdge(viewport, content, 1f, Offset(0f, 500f), -1f))
+        assertTrue(ZoomBounds.canTurnAtVerticalEdge(viewport, content, 1f, Offset(0f, -500f), -1f))
+        assertTrue(ZoomBounds.canTurnAtVerticalEdge(viewport, content, 1f, Offset(0f, 500f), 1f))
     }
 
     @Test
