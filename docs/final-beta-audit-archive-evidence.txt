@@ -1,0 +1,35 @@
+Read-only audit probes; C++ probe compiled current CMake UNRAR_SOURCES using g++ -O1 -std=c++11 -DRARDLL -DSILENT -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -DRAR_SMP -pthread.
+These exercise the current native engine and Java ZIP APIs on Linux, not Android JNI/SAF.
+Public compressed fixtures: https://raw.githubusercontent.com/libarchive/libarchive/master/libarchive/test/<filename>.uu
+
+$ /tmp/archive-final-audit/probe /tmp/test_read_format_rar5_solid.rar test6.bin
+entry=1 name=test.bin flags=0 size=1200 dict=1024 operation=SKIP result=0 callbacks=0 bytes=0
+entry=2 name=test1.bin flags=10 size=4096 dict=1024 operation=SKIP result=0 callbacks=0 bytes=0
+entry=3 name=test2.bin flags=10 size=4096 dict=1024 operation=SKIP result=0 callbacks=0 bytes=0
+entry=4 name=test3.bin flags=10 size=4096 dict=1024 operation=SKIP result=0 callbacks=0 bytes=0
+entry=5 name=test4.bin flags=10 size=4096 dict=1024 operation=SKIP result=0 callbacks=0 bytes=0
+entry=6 name=test5.bin flags=10 size=4096 dict=1024 operation=SKIP result=0 callbacks=0 bytes=0
+entry=7 name=test6.bin flags=10 size=4096 dict=1024 operation=TEST result=0 callbacks=1 bytes=4096
+header result=0
+exit=0
+
+$ /tmp/archive-final-audit/probe /tmp/test_read_format_rar_compress_normal.rar LibarchiveAddingTest.html
+entry=1 name=LibarchiveAddingTest.html flags=0 size=20111 dict=128 operation=TEST result=0 callbacks=1 bytes=20111
+header result=0
+exit=0
+
+$ /tmp/archive-final-audit/probe /tmp/test_read_format_rar5_compressed.rar test.bin
+entry=1 name=test.bin flags=0 size=1200 dict=128 operation=TEST result=0 callbacks=2 bytes=1200
+header result=0
+exit=0
+
+$ /tmp/archive-final-audit/probe /tmp/archive-final-audit/duplicate.rar page.png
+entry=1 name=page.png flags=0 size=5 dict=64 operation=TEST result=0 callbacks=1 bytes=5
+header result=0
+exit=0
+
+$ /usr/lib/jvm/java-21-openjdk-amd64/bin/java /tmp/archive-final-audit/ZipCompatibilityProbe.java
+listed=page.png readByName=second
+listed=page.png readByName=second
+SFX ZIP first stream entry=null
+exit=0

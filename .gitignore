@@ -8,3 +8,10 @@ local.properties
 **/.cxx/
 
 .kotlin/
+
+# Signing material and agent scratch
+.signing/
+.superpowers/
+
+# Local compiled installers
+releases/*.apk

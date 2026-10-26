@@ -5,9 +5,10 @@ import android.net.Uri
 import java.io.IOException
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.io.ByteArrayInputStream
+import java.io.SequenceInputStream
 import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
-import kotlinx.coroutines.CancellationException
 
 /** Copies a SAF document to private storage because ZipFile requires a seekable file. */
 class ZipArchiveReader(private val context: Context) : ArchiveReader {
@@ -17,10 +18,10 @@ class ZipArchiveReader(private val context: Context) : ArchiveReader {
         registerCancellation: ArchiveCancellationRegistrar,
     ): ByteArray? {
         val stream = context.contentResolver.openInputStream(uri) ?: throw IOException("Cannot open this comic.")
-        ZipInputStream(stream).use { zip ->
-            val cancellationHandle = registerCancellation.register(zip)
+        stream.use { source ->
+            val cancellationHandle = registerCancellation.register(source)
             try {
-                return readNaturalPreview(zip, cancellationCheck)
+                return previewStream(source, cancellationCheck).use { zip -> readNaturalPreview(zip, cancellationCheck) }
             } finally {
                 cancellationHandle.close()
             }
@@ -55,6 +56,7 @@ class ZipArchiveReader(private val context: Context) : ArchiveReader {
                 }
                 names.sortWith(NATURAL_PATH_ORDER)
                 if (names.isEmpty()) throw IOException("No supported image pages found.")
+                rejectDuplicateImageNames(names)
                 return object : OpenArchive {
                     override val pages = names.mapIndexed { index, name -> ComicPage(name, index) }
                     override fun readPage(
@@ -63,6 +65,7 @@ class ZipArchiveReader(private val context: Context) : ArchiveReader {
                         registerCancellation: ArchiveCancellationRegistrar,
                     ): ByteArray {
                         cancellationCheck()
+                        if (pages.getOrNull(page.position) != page) throw IOException("Page is missing.")
                         val entry = zip.getEntry(page.name) ?: throw IOException("Page is missing.")
                         if (entry.size >= 0 && !ArchiveLimits.isPageSizeAllowed(entry.size)) throw IOException("Page is too large.")
                         zip.getInputStream(entry).use { input ->
@@ -98,6 +101,16 @@ class ZipArchiveReader(private val context: Context) : ArchiveReader {
     }
 
     companion object {
+        /** Starts at the same bounded SFX header accepted by format detection. */
+        internal fun previewStream(input: InputStream, cancellationCheck: () -> Unit = {}): ZipInputStream {
+            val prefix = readArchiveDetectionPrefix(input, cancellationCheck)
+            val offset = (0..(prefix.size - 4).coerceAtLeast(-1)).firstOrNull { index ->
+                prefix[index] == 0x50.toByte() && prefix[index + 1] == 0x4b.toByte() &&
+                    prefix[index + 2] == 0x03.toByte() && prefix[index + 3] == 0x04.toByte()
+            } ?: 0
+            return ZipInputStream(SequenceInputStream(ByteArrayInputStream(prefix, offset, prefix.size - offset), input))
+        }
+
         internal fun readBounded(input: InputStream, limit: Long, cancellationCheck: () -> Unit = {}): ByteArray? {
             val result = ByteArrayOutputStream()
             val buffer = ByteArray(16 * 1024)
@@ -136,21 +149,28 @@ class ZipArchiveReader(private val context: Context) : ArchiveReader {
             var selectedName: String? = null
             var selectedBytes: ByteArray? = null
             var scannedBytes = 0L
+            var entryCount = 0
+            val imageNames = HashSet<String>()
             while (true) {
                 cancellationCheck()
                 val entry = zip.nextEntry ?: return selectedBytes
+                if (++entryCount > ArchiveLimits.MAX_ENTRIES) throw IOException("Comic has too many archive entries.")
                 val remaining = ArchiveLimits.MAX_PREVIEW_BYTES - scannedBytes
                 if (remaining <= 0) return selectedBytes
-                if (entry.size > remaining) return null
+                // A later oversized entry must not hide a usable cover already found.
+                if (entry.size > remaining) return selectedBytes
 
                 val isPage = !entry.isDirectory && isSafeImageName(entry.name)
+                if (isPage && !imageNames.add(entry.name)) {
+                    throw IOException("This comic contains duplicate image filenames. Rename the duplicate files and recreate the archive.")
+                }
                 if (isPage && isEarlierNaturalCover(entry.name, selectedName)) {
-                    val bytes = readBounded(zip, remaining, cancellationCheck) ?: return null
+                    val bytes = readBounded(zip, remaining, cancellationCheck) ?: return selectedBytes
                     scannedBytes += bytes.size
                     selectedName = entry.name
                     selectedBytes = bytes
                 } else {
-                    val drained = drainBounded(zip, remaining, cancellationCheck) ?: return null
+                    val drained = drainBounded(zip, remaining, cancellationCheck) ?: return selectedBytes
                     scannedBytes += drained
                 }
             }

@@ -32,22 +32,24 @@ class RarArchiveReader(private val context: Context) : ArchiveReader {
             cancellationCheck()
             val entries = NativeUnrar.list(staged.file.absolutePath)
             if (entries.size > ArchiveLimits.MAX_ENTRIES) throw IOException("Comic has too many archive entries.")
-            val pages = entries
+            val imageEntries = entries.withIndex()
                 .asSequence()
-                .filterNot { it.flags and RAR_DIRECTORY_FLAG != 0 }
-                .filter { ZipArchiveReader.isSafeImageName(it.name) }
-                .sortedWith { a, b -> ZipArchiveReader.NATURAL_PATH_ORDER.compare(a.name, b.name) }
+                .filterNot { it.value.flags and RAR_DIRECTORY_FLAG != 0 }
+                .filter { ZipArchiveReader.isSafeImageName(it.value.name) }
+                .sortedWith { a, b -> ZipArchiveReader.NATURAL_PATH_ORDER.compare(a.value.name, b.value.name) }
                 .toList()
-            if (pages.size > ArchiveLimits.MAX_PAGES) throw IOException("Comic has too many pages.")
-            if (pages.isEmpty()) throw IOException("No supported image pages found.")
-            if (pages.any { it.flags and RAR_ENCRYPTED_FLAG != 0 }) {
+            if (imageEntries.size > ArchiveLimits.MAX_PAGES) throw IOException("Comic has too many pages.")
+            if (imageEntries.isEmpty()) throw IOException("No supported image pages found.")
+            rejectDuplicateImageNames(imageEntries.map { it.value.name })
+            if (imageEntries.any { it.value.flags and RAR_ENCRYPTED_FLAG != 0 }) {
                 throw IOException("Password-protected RAR archives are not supported yet.")
             }
-            val comicPages = pages.mapIndexed { index, entry -> ComicPage(entry.name, index) }
+            val comicPages = imageEntries.mapIndexed { index, entry -> ComicPage(entry.value.name, index) }
+            val session = NativeUnrar.openSession(staged.file.absolutePath)
 
             return object : OpenArchive {
                 override val pages = comicPages
-                override val isSolid = pages.any { it.flags and RAR_SOLID_FLAG != 0 }
+                override val isSolid = imageEntries.any { it.value.flags and RAR_SOLID_FLAG != 0 }
 
                 override fun readPage(
                     page: ComicPage,
@@ -55,21 +57,24 @@ class RarArchiveReader(private val context: Context) : ArchiveReader {
                     registerCancellation: ArchiveCancellationRegistrar,
                 ): ByteArray {
                     cancellationCheck()
-                    val entry = pages.getOrNull(page.position) ?: throw IOException("Page is missing.")
+                    val indexedEntry = imageEntries.getOrNull(page.position) ?: throw IOException("Page is missing.")
+                    val entry = indexedEntry.value
+                    if (page.name != entry.name) throw IOException("Page is missing.")
                     if (!ArchiveLimits.isPageSizeAllowed(entry.size)) throw IOException("Page is too large.")
-                    val bytes = NativeUnrar.extract(
-                        archivePath = staged.file.absolutePath,
-                        entryName = entry.name,
+                    val bytes = session.extract(
+                        entryOrdinal = indexedEntry.index,
                         maxPageBytes = ArchiveLimits.MAX_PAGE_BYTES,
                         maxDictionaryBytes = availableNativeDictionaryBudget(),
                         cancellationCheck = cancellationCheck,
+                        registerCancellation = registerCancellation,
                     )
                     if (!ArchiveLimits.isPageSizeAllowed(bytes.size.toLong())) throw IOException("Page is too large.")
                     return bytes
                 }
 
+                @Synchronized
                 override fun close() {
-                    staged.close()
+                    try { session.close() } finally { staged.close() }
                 }
             }
         } catch (error: Throwable) {

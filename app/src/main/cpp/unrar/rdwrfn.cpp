@@ -55,6 +55,14 @@ ComprDataIO::~ComprDataIO()
 
 int ComprDataIO::UnpRead(byte *Addr,size_t Count)
 {
+#ifdef RARDLL
+  // Tablet Comics: packed input is consumed while replaying solid entries too.
+  // Poll without exposing packed/skipped bytes as extracted page content.
+  CommandData *PollCmd=((Archive *)SrcFile)->GetCommandData();
+  if (PollCmd->Callback!=NULL &&
+      PollCmd->Callback(UCM_PROGRESS,PollCmd->UserData,0,0)==-1)
+    ErrHandler.Exit(RARX_USERBREAK);
+#endif
 #ifndef RAR_NOCRYPT
   // In case of encryption we need to align read size to encryption 
   // block size. We can do it by simple masking, because unpack read code
@@ -156,6 +164,9 @@ void ComprDataIO::UnpWrite(byte *Addr,size_t Count)
 
 #ifdef RARDLL
   CommandData *Cmd=((Archive *)SrcFile)->GetCommandData();
+  if (Cmd->DllOpMode==RAR_SKIP && Cmd->Callback!=NULL &&
+      Cmd->Callback(UCM_PROGRESS,Cmd->UserData,0,0)==-1)
+    ErrHandler.Exit(RARX_USERBREAK);
   if (Cmd->DllOpMode!=RAR_SKIP)
   {
     if (Cmd->Callback!=NULL &&

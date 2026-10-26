@@ -1,0 +1,38 @@
+Tablet Comics 0.6.1-beta — final verification, 26 October 2026
+
+Final Gradle command (exit 0):
+ANDROID_HOME=/tmp/android-sdk ANDROID_SDK_ROOT=/tmp/android-sdk GRADLE_USER_HOME=/tmp/gradle-home /tmp/gradle-8.9/bin/gradle :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleRelease :app:assembleDebugAndroidTest --max-workers=2 -Dorg.gradle.jvmargs='-Xmx1536m -Dhttps.proxyHost=proxy -Dhttps.proxyPort=8080 -Dhttp.proxyHost=proxy -Dhttp.proxyPort=8080'
+BUILD SUCCESSFUL in 1m 33s; 139 actionable tasks: 45 executed, 94 up-to-date.
+
+JUnit: 125 tests, 26 classes, 0 failures, 0 errors, 0 skipped.
+Lint: 0 errors, 7 warnings, 1 informational item.
+Android instrumentation: 23 cases compiled/packaged; not executed, no device connected.
+
+Signing: scripts/sign-beta.sh (exit 0).
+APK: releases/tablet-comics-0.6.1-beta.apk
+Package: dev.tabletcomics, versionCode 17, versionName 0.6.1-beta.
+Verified v2=true, v3=true.
+Lineage old: af83e47650b7ce108b9c74749e02f7e444f72e18fcf7a3901d96e45463ee727e
+Lineage new: a751cfc1f12ff43c69f4f322bb412349cb9a548b0d6a474887ec98ed6b5b45a9
+Both certificates: installed-data=true, shared-UID=true, permission=true, rollback=false, auth=true.
+Explicit apksigner verification at API 26, 28, 31, 35: all exit 0.
+API 26 emits the expected unknown-v3-scheme warning while v2 verification passes.
+
+Signed APK ELF inspection:
+lib/arm64-v8a/libandroidx.graphics.path.so: all LOAD alignments 0x4000.
+lib/arm64-v8a/libtablet_unrar.so: all LOAD alignments 0x4000.
+lib/x86_64/libandroidx.graphics.path.so: all LOAD alignments 0x4000.
+lib/x86_64/libtablet_unrar.so: all LOAD alignments 0x4000.
+zipalign -c -P 16 4: exit 0.
+
+Native engine host probe output:
+solid /workspace/app/src/androidTest/assets/native/solid-rar4.rar: forward polls=9 replay polls=68; cancelled skip recovered
+solid /workspace/app/src/androidTest/assets/native/solid-rar5.rar: forward polls=6 replay polls=31; cancelled skip recovered
+Native archive regression probes passed.
+
+Archive-only JVM output (overlaps the aggregate suite):
+JUnit version 4.13.2
+.....................
+Time: 4.146
+
+OK (21 tests)

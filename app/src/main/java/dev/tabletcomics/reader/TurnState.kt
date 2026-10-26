@@ -4,10 +4,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import kotlin.math.abs
 import kotlin.math.sign
 
-internal data class TurnSnapshot(val current: ReaderUnit, val previous: ReaderUnit?, val next: ReaderUnit?)
+internal data class TurnSnapshot(val current: ReaderUnit, val previous: ReaderUnit?, val next: ReaderUnit?) {
+    /** Null is captured availability too; a late prefetch belongs to the next gesture. */
+    fun neighbor(offset: Float, rightToLeft: Boolean): ReaderUnit? =
+        if ((offset < 0f) xor rightToLeft) next else previous
+}
 internal data class TurnSettle(val start: Float, val destination: Float, val target: ReaderUnit?)
 
 /** Owns one gesture's page snapshot and guarantees every finish/reset path clears it. */
@@ -19,11 +24,14 @@ internal class TurnState {
     var settling: Boolean by mutableStateOf(false)
         private set
     private var pendingTarget: ReaderUnit? = null
+    var committedUnit: ReaderUnit? by mutableStateOf(null)
+        private set
+    private var committedOriginIndex: Int? = null
 
     val hasSnapshot: Boolean get() = snapshot != null
 
     fun capture(current: ReaderUnit, previous: ReaderUnit?, next: ReaderUnit?) {
-        if (settling || snapshot != null) return
+        if (settling || snapshot != null || committedUnit != null) return
         snapshot = TurnSnapshot(current, previous, next)
     }
 
@@ -44,8 +52,7 @@ internal class TurnState {
             reset()
             return null
         }
-        val forward = (start < 0f) xor rightToLeft
-        val neighbor = if (forward) frame.next else frame.previous
+        val neighbor = frame.neighbor(start, rightToLeft)
         val target = neighbor?.takeIf {
             !cancelled && TurnNavigation.shouldComplete(start, velocity, width)
         }
@@ -59,13 +66,33 @@ internal class TurnState {
         if (settling) offset = value
     }
 
-    fun completeSettle(): ReaderUnit? {
+    fun completeSettle(onCommit: (ReaderUnit) -> Unit = {}): ReaderUnit? = Snapshot.withMutableSnapshot {
         val target = pendingTarget
-        reset()
-        return target
+        // Publish the incoming page and its zoom before removing the outgoing frame.
+        if (target != null) {
+            committedOriginIndex = snapshot?.current?.startIndex
+            committedUnit = target
+            onCommit(target)
+        }
+        clearGesture()
+        target
+    }
+
+    /** Keep the settled frame until the parent publishes a new current page (or an explicit seek). */
+    fun acknowledge(currentIndex: Int) {
+        if (committedUnit != null && currentIndex != committedOriginIndex) {
+            committedUnit = null
+            committedOriginIndex = null
+        }
     }
 
     fun reset() {
+        committedUnit = null
+        committedOriginIndex = null
+        clearGesture()
+    }
+
+    fun clearGesture() {
         snapshot = null
         offset = 0f
         settling = false

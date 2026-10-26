@@ -164,7 +164,8 @@ struct RAROpenArchiveDataEx
 
 enum UNRARCALLBACK_MESSAGES {
   UCM_CHANGEVOLUME,UCM_PROCESSDATA,UCM_NEEDPASSWORD,UCM_CHANGEVOLUMEW,
-  UCM_NEEDPASSWORDW,UCM_LARGEDICT
+  UCM_NEEDPASSWORDW,UCM_LARGEDICT,
+  UCM_PROGRESS // Tablet Comics extension: cancellation poll, no output bytes.
 };
 
 typedef int (PASCAL *CHANGEVOLPROC)(char *ArcName,int Mode);
@@ -182,6 +183,8 @@ int    PASCAL RARReadHeaderEx(HANDLE hArcData,struct RARHeaderDataEx *HeaderData
 int    PASCAL RARProcessFile(HANDLE hArcData,int Operation,char *DestPath,char *DestName);
 int    PASCAL RARProcessFileW(HANDLE hArcData,int Operation,wchar_t *DestPath,wchar_t *DestName);
 void   PASCAL RARSetCallback(HANDLE hArcData,UNRARCALLBACK Callback,LPARAM UserData);
+// Tablet Comics extension: enforce the caller's limit even below the 32 MiB default.
+void   PASCAL RARSetDictionaryLimit(HANDLE hArcData,unsigned long long LimitBytes);
 void   PASCAL RARSetChangeVolProc(HANDLE hArcData,CHANGEVOLPROC ChangeVolProc);
 void   PASCAL RARSetProcessDataProc(HANDLE hArcData,PROCESSDATAPROC ProcessDataProc);
 void   PASCAL RARSetPassword(HANDLE hArcData,char *Password);

@@ -3,7 +3,6 @@ package dev.tabletcomics.reader
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
 import android.net.Uri
 import android.util.Log
@@ -17,7 +16,6 @@ import dev.tabletcomics.archive.RarArchiveReader
 import dev.tabletcomics.archive.archiveCancellationRegistrar
 import dev.tabletcomics.archive.detectArchiveFormat
 import dev.tabletcomics.archive.ZipArchiveReader
-import dev.tabletcomics.reader.FullResolutionPage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,13 +30,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.IOException
-import java.io.File
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 /** Main-thread controller. Archive work and cleanup share the same serialized IO boundary. */
 class ComicReaderSession(
@@ -50,60 +44,38 @@ class ComicReaderSession(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var worker: Job? = null
     private var cleanup: Job? = null
-    private var archive: OpenArchive? = null
+    @Volatile private var archive: OpenArchive? = null
+    @Volatile private var sourceStore: SessionSourceStore? = null
     private var uri: Uri? = null
     private var format = "zip"
-    private var epoch = 0L
+    @Volatile private var epoch = 0L
     private var request = 0L
     private var spreads = false
     private var rtl = false
     private var requestedIndex = 0
     private val destinationRequests = DestinationRequestGate()
     private var seekState by mutableStateOf(SeekState())
-    private var disposed = false
-    private val thumbnailCache = object : android.util.LruCache<Int, Bitmap>(2 * 1024 * 1024) {
-        override fun sizeOf(key: Int, value: Bitmap): Int = value.allocationByteCount
-    }
-    private data class Cached(val unit: ReaderUnit, val dimension: Int)
-    private val cache = linkedMapOf<Int, Cached>()
-    private val fullResolutionSources = ConcurrentHashMap<Int, FullResolutionPage>()
+    @Volatile private var disposed = false
+    private val thumbnailCache = SessionThumbnailCache<Bitmap>(2L * 1024 * 1024) { it.allocationByteCount }
+    private val cache = linkedMapOf<Int, ReaderUnit>()
+    private val regionDecoder = PageRegionDecoder()
 
-    // Reserve room for a current upgrade while its lower-resolution version is still drawn.
-    private val totalBitmapBudget = min(40L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 6)
-    private val byteBudget = (totalBitmapBudget - 3L * 1024 * 1024).coerceAtLeast(1L * 1024 * 1024)
-    private fun dimensions(solid: Boolean = false): Pair<Int, Int> {
-        val pageSlots = if (spreads) 2 else 1
-        val displayTarget = max(context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
-            .coerceIn(1600, 4096).toDouble()
-        val worstPixels = pageSlots * if (solid) {
-            2 * displayTarget * displayTarget + 900.0 * 900
-        } else {
-            displayTarget * displayTarget + 3 * 900.0 * 900
-        }
-        val factor = min(1.0, sqrt(byteBudget * 0.85 / (4.0 * worstPixels)))
-        return max(256, (displayTarget * factor).toInt()) to max(144, (900 * factor).toInt())
-    }
+    // All three swipe units use the same quality. Reserve heap space for source bytes,
+    // zoom tiles, thumbnails and the rest of the app rather than retaining full-size originals.
+    private val byteBudget = (min(96L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 4) -
+        3L * 1024 * 1024).coerceAtLeast(1L * 1024 * 1024)
+    private fun readingDimension(): Int = readingPageDimension(
+        max(context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels),
+        if (spreads) 2 else 1,
+        byteBudget,
+    )
 
-    suspend fun decodeRegions(source: FullResolutionPage, regions: List<Rect>): List<Bitmap?> = withContext(Dispatchers.IO) {
-        if (source.sourceFile.length() <= 0L) return@withContext regions.map { null }
-        var decoder: BitmapRegionDecoder? = null
-        try {
-            decoder = BitmapRegionDecoder.newInstance(source.sourceFile.absolutePath, false)
-            regions.map { region ->
-                val safe = Rect(region).apply { intersect(0, 0, source.width, source.height) }
-                if (safe.isEmpty) null else decoder.decodeRegion(safe, BitmapFactory.Options().apply {
-                    inSampleSize = 1
-                    inPreferredConfig = Bitmap.Config.ARGB_8888
-                    inScaled = false
-                })
-            }
-        } catch (_: OutOfMemoryError) {
-            regions.map { null }
-        } catch (_: Exception) {
-            regions.map { null }
-        } finally {
-            decoder?.recycle()
-        }
+    suspend fun decodeRegions(
+        source: FullResolutionPage, regions: List<Rect>, sampleSize: Int = 1,
+    ): List<Bitmap?> {
+        coroutineContext.ensureActive()
+        val store = sourceStore ?: return List(regions.size) { null }
+        return regionDecoder.decode(store, source, regions, sampleSize)
     }
 
     var current: ReaderUnit? by mutableStateOf(null)
@@ -130,10 +102,12 @@ class ComicReaderSession(
         destinationRequests.clear()
         seekState = SeekState(requestedIndex = restoredIndex, loading = true)
         val session = epoch
+        thumbnailCache.activate(ThumbnailBookKey(session, uri.toString()))
         val token = ++request
         val pendingCleanup = cleanup
         worker = scope.launch {
             var unpublished: OpenArchive? = null
+            var unpublishedSources: SessionSourceStore? = null
             try {
                 pendingCleanup?.join()
                 coroutineContext.ensureActive()
@@ -141,6 +115,7 @@ class ComicReaderSession(
                     val job = coroutineContext[Job] ?: throw CancellationException("Archive open was cancelled.")
                     val cancellationCheck = { job.ensureActive() }
                     val cancellationRegistration = archiveCancellationRegistrar(job)
+                    unpublishedSources = SessionSourceStore(pageSourceRoot(context))
                     ioMutex.withLock {
                         val detectedFormat = detectArchiveFormat(
                             context, uri, format, cancellationCheck, cancellationRegistration,
@@ -156,6 +131,8 @@ class ComicReaderSession(
                 val opened = unpublished ?: throw IOException("Could not open comic.")
                 archive = opened
                 unpublished = null
+                sourceStore = unpublishedSources
+                unpublishedSources = null
                 totalPages = opened.pages.size
                 val index = clampRestoredPage(restoredIndex, totalPages)
                 requestedIndex = index
@@ -172,6 +149,7 @@ class ComicReaderSession(
                 }
             } finally {
                 unpublished?.let { closeResource(it) }
+                unpublishedSources?.let { withContext(NonCancellable + Dispatchers.IO) { it.close() } }
             }
         }
     }
@@ -200,7 +178,7 @@ class ComicReaderSession(
         oldWorker?.cancel()
         val hit = cache[start]
         if (hit != null) {
-            current = hit.unit
+            current = hit
             retainWindow(start)
             publishNeighbors(start)
             seekState = seekState.rendered(start)
@@ -255,10 +233,13 @@ class ComicReaderSession(
     /** Loads a small page-strip image from the active archive without touching the turn cache. */
     suspend fun thumbnail(index: Int): Bitmap? = loadThumbnailOrNull {
         if (disposed) return@loadThumbnailOrNull null
-        thumbnailCache.get(index)?.let { return@loadThumbnailOrNull it }
         val opened = archive ?: return@loadThumbnailOrNull null
+        val sources = sourceStore ?: return@loadThumbnailOrNull null
+        val bookUri = uri ?: return@loadThumbnailOrNull null
         if (index !in opened.pages.indices) return@loadThumbnailOrNull null
         val session = epoch
+        val book = ThumbnailBookKey(session, bookUri.toString())
+        thumbnailCache.get(book, index)?.let { return@loadThumbnailOrNull it }
         withContext(Dispatchers.IO) {
             val job = coroutineContext[Job] ?: throw CancellationException("Thumbnail load was cancelled.")
             val cancellationCheck = { job.ensureActive() }
@@ -266,9 +247,19 @@ class ComicReaderSession(
             ioMutex.withLock {
                 cancellationCheck()
                 if (disposed || epoch != session || archive !== opened) return@withLock null
-                val bytes = opened.readPage(opened.pages[index], cancellationCheck, cancellationRegistration)
+                val bytes = sources.readBytes(index)
+                    ?: opened.readPage(opened.pages[index], cancellationCheck, cancellationRegistration)
                 cancellationCheck()
-                decode(bytes, 224).also { thumbnailCache.put(index, it) }
+                val bitmap = decode(bytes, 224)
+                var published = false
+                try {
+                    cancellationCheck()
+                    if (disposed || epoch != session || archive !== opened) return@withLock null
+                    published = thumbnailCache.publish(book, index, bitmap)
+                    bitmap.takeIf { published }
+                } finally {
+                    if (!published) bitmap.recycle()
+                }
             }
         }
     }
@@ -279,7 +270,7 @@ class ComicReaderSession(
         this.spreads = spreads
         this.rtl = rtl
         cache.clear()
-        thumbnailCache.evictAll()
+        thumbnailCache.activate(uri?.let { ThumbnailBookKey(epoch, it.toString()) })
         previous = null
         next = null
         if (archive != null) navigate(logicalPage, force = true)
@@ -305,18 +296,19 @@ class ComicReaderSession(
         oldWorker?.cancel()
         val oldArchive = archive
         archive = null
+        val oldSources = sourceStore
+        sourceStore = null
         val earlierCleanup = cleanup
         // This standalone cleanup survives disposal of the UI/session scope.
         cleanup = CoroutineScope(Dispatchers.IO).launch {
             earlierCleanup?.join()
             oldWorker?.cancelAndJoin()
             oldArchive?.let { closeResource(it) }
-            fullResolutionSources.values.forEach { it.sourceFile.delete() }
-            fullResolutionSources.clear()
+            oldSources?.close()
         }
         uri = null
         cache.clear()
-        thumbnailCache.evictAll()
+        thumbnailCache.activate(null)
         current = null
         previous = null
         next = null
@@ -330,7 +322,7 @@ class ComicReaderSession(
     private suspend fun prepare(
         opened: OpenArchive, start: Int, session: Long, token: Long, bookUri: Uri, committed: Boolean = false
     ) {
-        val (fullDimension, neighborDimension) = dimensions(opened.isSolid)
+        val fullDimension = readingDimension()
         retainWindow(start)
         val solidPlan = if (opened.isSolid) {
             solidReadPlan(
@@ -340,22 +332,6 @@ class ComicReaderSession(
                 cachedIndices = cache.keys,
             )
         } else null
-        // An old full-size current page becomes a small neighbor before another page is decoded.
-        val retainedNeighborIndices = if (opened.isSolid) {
-            listOfNotNull(
-                TurnNavigation.neighbor(start, totalPages, spreads, forward = false),
-                TurnNavigation.neighbor(start, totalPages, spreads, forward = true),
-            )
-        } else wantedNeighbors(start)
-        for (index in retainedNeighborIndices) {
-            val retained = cache[index] ?: continue
-            if (retained.dimension > neighborDimension) {
-                val reduced = withContext(Dispatchers.IO) { shrink(retained.unit, neighborDimension) }
-                if (!valid(session, token)) return
-                cache[index] = Cached(reduced, neighborDimension)
-                publishNeighbors(start)
-            }
-        }
         publishNeighbors(start)
 
         if (solidPlan != null) {
@@ -364,7 +340,7 @@ class ComicReaderSession(
                     if (!committed) {
                         val unit = readUnit(opened, start, fullDimension)
                         if (!valid(session, token)) return@executeSolidReadPlan false
-                        cache[start] = Cached(unit, fullDimension)
+                        cache[start] = unit
                         current = unit
                         seekState = seekState.rendered(start)
                         onProgress(bookUri, start, totalPages)
@@ -373,7 +349,7 @@ class ComicReaderSession(
                     try {
                         val unit = readUnit(opened, index, fullDimension)
                         if (!valid(session, token)) return@executeSolidReadPlan false
-                        cache[index] = Cached(unit, fullDimension)
+                        cache[index] = unit
                         publishNeighbors(start)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
@@ -388,9 +364,9 @@ class ComicReaderSession(
             }
         } else {
             if (!committed) {
-                val unit = readUnit(opened, start, neighborDimension)
+                val unit = readUnit(opened, start, fullDimension)
                 if (!valid(session, token)) return
-                cache[start] = Cached(unit, neighborDimension)
+                cache[start] = unit
                 current = unit
                 seekState = seekState.rendered(start)
                 onProgress(bookUri, start, totalPages)
@@ -398,9 +374,9 @@ class ComicReaderSession(
             for (index in wantedNeighbors(start)) {
                 if (cache[index] == null) {
                     try {
-                        val unit = readUnit(opened, index, neighborDimension)
+                        val unit = readUnit(opened, index, fullDimension)
                         if (!valid(session, token)) return
-                        cache[index] = Cached(unit, neighborDimension)
+                        cache[index] = unit
                         publishNeighbors(start)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
@@ -413,20 +389,14 @@ class ComicReaderSession(
                 }
             }
         }
-        val existing = cache[start] ?: return
-        if (!opened.isSolid && existing.dimension < fullDimension) {
-            val full = readUnit(opened, start, fullDimension)
-            if (!valid(session, token)) return
-            cache[start] = Cached(full, fullDimension)
-            current = full
-        }
         if (valid(session, token)) {
             if (seekState.renderedIndex != start) seekState = seekState.rendered(start)
             destinationRequests.complete(start)
         }
-        val keepSources = (wantedNeighbors(start) + start + if (spreads) listOf(start + 1) else emptyList()).toSet()
-        fullResolutionSources.entries.removeIf { (index, source) ->
-            if (index in keepSources) false else { source.sourceFile.delete(); true }
+        if (valid(session, token)) {
+            val keepSources = retainedSourcePageIds(cache.values.map { unit -> unit.pages.map { it.first } })
+            val sources = sourceStore
+            withContext(Dispatchers.IO) { sources?.retainOnly(keepSources) }
         }
     }
 
@@ -452,11 +422,12 @@ class ComicReaderSession(
     }
 
     private fun publishNeighbors(start: Int) {
-        previous = TurnNavigation.neighbor(start, totalPages, spreads, false)?.let { cache[it]?.unit }
-        next = TurnNavigation.neighbor(start, totalPages, spreads, true)?.let { cache[it]?.unit }
+        previous = TurnNavigation.neighbor(start, totalPages, spreads, false)?.let { cache[it] }
+        next = TurnNavigation.neighbor(start, totalPages, spreads, true)?.let { cache[it] }
     }
 
     private suspend fun readUnit(opened: OpenArchive, start: Int, dimension: Int): ReaderUnit {
+        val sources = sourceStore ?: throw CancellationException("Page source session was closed.")
         val indices = if (spreads && start > 0) listOf(start, start + 1).filter { it < opened.pages.size }
         else listOf(start)
         return withContext(Dispatchers.IO) {
@@ -464,36 +435,32 @@ class ComicReaderSession(
             val cancellationCheck = { job.ensureActive() }
             val cancellationRegistration = archiveCancellationRegistrar(job)
             ioMutex.withLock {
-                val decoded = indices.map { index ->
+                val decoded = cancellableRegionBatch(indices, decode = { index ->
                     cancellationCheck()
-                    val bytes = opened.readPage(opened.pages[index], cancellationCheck, cancellationRegistration)
-                    if (fullResolutionSources[index] == null) {
-                        runCatching { saveFullResolutionSource(index, bytes) }.getOrNull()?.let { source ->
-                            fullResolutionSources[index] = source
+                    val bytes = sources.readBytes(index)
+                        ?: opened.readPage(opened.pages[index], cancellationCheck, cancellationRegistration)
+                    cancellationCheck()
+                    if (sources.source(index) == null) {
+                        try { saveFullResolutionSource(sources, index, bytes) }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (failure: IOException) {
+                            Log.w("ComicReaderSession", "Could not stage original page for zoom", failure)
                         }
                     }
                     index to decode(bytes, dimension)
-                }
+                }, discard = { it.second.recycle() }).filterNotNull()
                 ReaderUnit(start, if (rtl) decoded.reversed() else decoded,
-                    indices.mapNotNull { index -> fullResolutionSources[index]?.let { index to it } }.toMap())
+                    indices.mapNotNull { index -> sources.source(index)?.let { index to it } }.toMap())
             }
         }
     }
 
-    private fun saveFullResolutionSource(index: Int, bytes: ByteArray): FullResolutionPage {
+    private fun saveFullResolutionSource(sources: SessionSourceStore, index: Int, bytes: ByteArray): FullResolutionPage {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (!ArchiveLimits.isImageSizeAllowed(bounds.outWidth, bounds.outHeight))
             throw IOException("Unsupported or oversized image page.")
-        val directory = File(context.cacheDir, "comic-page-source").apply { mkdirs() }
-        val file = File.createTempFile("page-${index}-", ".image", directory)
-        try {
-            file.writeBytes(bytes)
-            return FullResolutionPage(index, file, bounds.outWidth, bounds.outHeight)
-        } catch (failure: Exception) {
-            file.delete()
-            throw failure
-        }
+        return sources.save(index, bytes, bounds.outWidth, bounds.outHeight)
     }
 
     private fun decode(bytes: ByteArray, dimension: Int): Bitmap {
@@ -508,13 +475,6 @@ class ComicReaderSession(
             inScaled = false
         }) ?: throw IOException("Could not decode page image.")
     }
-
-    private fun shrink(unit: ReaderUnit, dimension: Int): ReaderUnit = ReaderUnit(unit.startIndex,
-        unit.pages.map { (index, bitmap) ->
-            val scale = min(1.0, dimension.toDouble() / max(bitmap.width, bitmap.height))
-            index to if (scale >= 1.0) bitmap else Bitmap.createScaledBitmap(bitmap,
-                max(1, (bitmap.width * scale).roundToInt()), max(1, (bitmap.height * scale).roundToInt()), true)
-        })
 
     private suspend fun closeResource(opened: OpenArchive) {
         withContext(NonCancellable + Dispatchers.IO) {

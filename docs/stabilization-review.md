@@ -1,0 +1,16 @@
+# Stabilization integration review
+
+Reviewed the integrated working tree against `docs/beta-stabilization-plan.md`, `docs/final-beta-audit-2026-10-25.md`, and the reader, session, archive and backup implementation reports. This review made no application changes and ran no Gradle tasks; shared build and test verification belongs to the root integration run.
+
+## Important findings resolved during review
+
+1. **Portable settings omitted reading direction and spreads.** `LibraryBackup.kt:52` now includes `rtl` and `spreads` in the per-comic whitelist, including validation, relocation and recycled-document cleanup. `LibraryBackupInstrumentedTest` includes their export/import and remapping behavior.
+2. **Returning to an older SAF URI could revive removed state.** `LibraryRepository.kt:95` now requests authoritative association replacement during relocation. `LibraryBackupStore.kt:53` clears the target's bookmarks and memberships before copying the latest active record, and `LibraryBackupStore.kt:70` clears missing preference keys when relocating. The same helper synchronizes legacy progress fallbacks. Explicit backup import retains the intended union behavior. The added old-tree regressions cover removed preferences, bookmarks and memberships and preserve unrelated records and collection definitions.
+3. **Pending reader progress could overwrite resets or imported data.** `MainActivity.kt:245` now closes the previous session, flushes the progress queue, performs a requested reset before activating the next reader, reads the latest persisted position, and checks an open-request generation before publication. Backup export/import and detail resets use the same mutex (`MainActivity.kt:356`, `MainActivity.kt:373`, `MainActivity.kt:831`). The source ordering now prevents a queued earlier save from defeating these operations.
+4. **Compose integration coverage was missing.** `ReaderGestureInstrumentedTest` now exercises unloaded-neighbor end handling, a neighbor arriving during an active gesture followed by a successful new gesture, and a zoomed page turn. `LibraryNavigationInstrumentedTest` now also removes and restores the library composition through the production `DestinationContent` saveable wrapper and checks its scrolled item. Root owns test-APK compilation; no device execution is claimed.
+
+## Final source assessment
+
+No additional unresolved critical or important source finding was identified in the reviewed integration. The renderer consistently uses the shared inverse transform and floating tile boundaries, captures missing neighbors, checks the actual final page, and forwards sampled region requests. Source retention covers every cached spread page; decoder leases protect original staging files; thumbnail publication checks the session epoch after decode. Native extraction keeps a serialized cursor, checks cancellation during replay, enforces the requested dictionary ceiling, and preserves exact page identity through ordinals or rejects duplicate names.
+
+This is a source review, not evidence of tablet execution. Device-only gesture appearance, native/Java/GPU memory, SAF provider behavior, installation and restoration checks remain the explicitly documented device verification work. Signing and ELF/APK alignment verification belong to the root release checks.

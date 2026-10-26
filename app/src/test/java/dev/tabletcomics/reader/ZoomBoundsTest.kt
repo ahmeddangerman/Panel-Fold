@@ -10,6 +10,26 @@ import org.junit.Test
 
 class ZoomBoundsTest {
     @Test
+    fun newPageKeepsZoomAndAlignsItsTopWithTheViewport() {
+        val viewport = Size(1200f, 800f)
+        for (page in listOf(Size(600f, 1000f), Size(1000f, 1200f))) {
+            val pages = listOf(page)
+            val result = ZoomBounds.pageStart(2f, viewport, pages)
+            val content = ZoomBounds.fittedContentRect(viewport, pages)
+            val renderedTop = viewport.height / 2f + (content.top - viewport.height / 2f) * result.scale + result.pan.y
+            assertEquals(2f, result.scale, 0f)
+            assertEquals(0f, renderedTop, .01f)
+        }
+    }
+
+    @Test
+    fun unzoomedPageStillFitsAndCentersNormally() {
+        val viewport = Size(1200f, 800f)
+        val result = ZoomBounds.pageStart(1f, viewport, listOf(Size(1000f, 500f)))
+        assertEquals(ZoomTransform.Identity, result)
+    }
+
+    @Test
     fun panClampsPortraitBounds() {
         val viewport = Size(800f, 1200f)
         val page = Rect(100f, 0f, 700f, 1200f)
@@ -108,6 +128,14 @@ class ZoomBoundsTest {
         assertEquals(Offset(600f, 0f), leftPage.pan)
         assertEquals(2f, rightPage.scale, 0f)
         assertEquals(Offset(-600f, 0f), rightPage.pan)
+    }
+
+    @Test
+    fun adjustableSensitivityChangesPanDistance() {
+        val viewport = Size(1000f, 1000f)
+        val content = Rect(0f, 0f, 1000f, 1000f)
+        val moved = ZoomTransform(2f).transformBy(1f, Offset(20f, -10f), viewport, content, 2f)
+        assertEquals(Offset(40f, -20f), moved.pan)
     }
 
     @Test

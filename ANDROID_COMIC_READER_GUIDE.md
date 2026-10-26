@@ -46,14 +46,14 @@ Default to left-to-right and save direction per book. In right-to-left mode, rev
 
 Offer two-page spreads in landscape as an option. The cover is alone. Pair logical pages 2–3, 4–5, and onward; show an unmatched final page alone. Advancing moves by one page in single-page mode or one spread in spread mode. When saving spread progress, save the first logical page shown.
 
-Prefetch only the next reading unit. Bound the decoded bitmap session budget to the lower of 40 MiB or one-sixth of the app's maximum heap, with additional headroom for temporary decode work. Sample images to fit the tablet. The current zoom uses the sampled bitmap and does not allocate a second higher-resolution copy.
+Retain current/previous/next reading units at equal reading quality. Bound their bitmap budget to at most one-quarter of the app heap (capped at 96 MiB), reserve thumbnail and transition headroom, and account for both pages in spreads. Decode original-source regions for zoom detail with a serialized cancellable tile queue and adaptive sampling that covers the entire visible region. Lease original source files so eviction cannot delete data in use by a decoder.
 
 ### 5. Add resource limits and recovery
 
 Use these initial safety limits and report a clear, recoverable error when one is exceeded:
 
 - 20,000 archive entries and 20,000 supported image pages per comic.
-- 24 MiB maximum uncompressed size for an individual image entry. ZIP cover discovery scans at most 20 MiB of uncompressed entry data; if it cannot establish the natural first page within that budget, it returns no preview.
+- 24 MiB maximum uncompressed size for an individual image entry. ZIP cover discovery scans at most 20 MiB of uncompressed entry data; if the budget prevents finding the natural first page, it keeps the best image already found; count empty entries toward the 20,000-entry cap.
 - 100 megapixels per source image.
 - 8 GiB maximum size of the staged archive file. This is not a limit on the sum of uncompressed page contents.
 - Keep at least 1 GiB of free device storage while staging an archive.
@@ -94,3 +94,9 @@ Use small synthetic fixtures for automated archive and page-mapping checks. Do n
 ## Delivery
 
 Provide the source project, reproducible build and APK installation instructions, dependency and license notices (including native archive components), and a debug APK for personal installation. Include a short note with the exact tablet model, HarmonyOS version, Android API compatibility, and archive formats verified. If the device or an archive format is unavailable for testing, state that clearly.
+
+## Current beta stabilization and tools
+
+See [beta stabilization results](docs/beta-stabilization-results.md) for current audit closure and verification. In Settings, export/restore reading metadata, adjust pan/momentum, and clear cover storage. In Reading options, choose fit and border trimming and control whether zoom carries between pages. In comic details, choose/retry/reset cover artwork. The Library exposes an explicit All comics escape from collection scope and retains destination scroll state while a comic is open.
+
+Backups contain metadata and whitelisted preferences, not image files, signing keys or folder permissions. After restoring onto another installation, select the comic folder; unique title/folder/format matches receive restored data. Ambiguous matches remain pending rather than attaching progress to the wrong comic.

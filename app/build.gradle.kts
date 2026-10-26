@@ -12,10 +12,37 @@ android {
         applicationId = "dev.tabletcomics"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.6.0"
+        versionCode = 17
+        versionName = "0.6.1-beta"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64") }
+    }
+    signingConfigs {
+        getByName("debug") {
+            val stableKey = rootProject.file(".signing/current.keystore")
+            if (stableKey.isFile) {
+                storeFile = stableKey
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+        create("externalRelease") {
+            val configuredKey = System.getenv("TABLET_COMICS_KEYSTORE")
+            if (!configuredKey.isNullOrBlank()) {
+                storeFile = file(configuredKey)
+                storePassword = System.getenv("TABLET_COMICS_STORE_PASSWORD")
+                keyAlias = System.getenv("TABLET_COMICS_KEY_ALIAS")
+                keyPassword = System.getenv("TABLET_COMICS_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            if (!System.getenv("TABLET_COMICS_KEYSTORE").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("externalRelease")
+            }
+        }
     }
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     buildFeatures { compose = true }
@@ -37,6 +64,10 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

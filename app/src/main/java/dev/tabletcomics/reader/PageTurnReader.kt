@@ -1,7 +1,9 @@
 package dev.tabletcomics.reader
 
 import android.graphics.Bitmap
+import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
 import java.io.File
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animate
@@ -20,37 +22,37 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect as FloatRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
-import kotlin.math.min
-import kotlin.math.roundToInt
 import kotlin.math.sign
 
-enum class PageTurnStyle(val label: String) {
-    PHOTO_SLIDE("Photo swipe"), PAPER_CURL("Paper curl"), SLIDING_SHEET("Sliding sheet")
-}
-
+/** Original, untouched page bytes, retained by the reader session for region decoding. */
 data class FullResolutionPage(val pageIndex: Int, val sourceFile: File, val width: Int, val height: Int)
 
 data class ReaderUnit(
@@ -59,34 +61,56 @@ data class ReaderUnit(
     val fullResolutionPages: Map<Int, FullResolutionPage> = emptyMap(),
 )
 
-private data class DetailTile(val pageIndex: Int, val region: Rect, val bitmap: Bitmap)
+private data class DetailTile(val pageIndex: Int, val region: PixelRegion, val bitmap: Bitmap)
 
-/** Neighbors are decoded before they may be dragged into view. Progress is committed only after settling. */
+/** Neighbors are captured at gesture start. Progress is committed only after settling. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PageTurnReader(
     current: ReaderUnit,
     previous: ReaderUnit?,
     next: ReaderUnit?,
+    totalPages: Int,
     rightToLeft: Boolean,
-    style: PageTurnStyle,
     layoutKey: String,
+    bookKey: String,
+    initialZoomScale: Float = 1f,
+    onZoomScaleChanged: (Float) -> Unit = {},
     onTurn: (target: ReaderUnit) -> Unit,
     onToggleControls: () -> Unit,
     onEndReached: () -> Unit,
     showZoomReset: Boolean = true,
-    onDecodeRegions: suspend (FullResolutionPage, List<Rect>) -> List<Bitmap?>,
-    modifier: Modifier = Modifier
+    fitMode: PageFit = PageFit.PAGE,
+    cropBorders: Boolean = false,
+    keepZoom: Boolean = true,
+    panSensitivity: Float = 1.5f,
+    momentumStrength: Float = 1f,
+    onDecodeRegions: suspend (FullResolutionPage, List<Rect>, Int) -> List<Bitmap?>,
+    modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current.density
     var width by remember { mutableFloatStateOf(0f) }
     var viewport by remember { mutableStateOf(Size.Zero) }
-    val turnState = remember { TurnState() }
+    val turnState = remember(bookKey) { TurnState() }
     var settleJob by remember { mutableStateOf<Job?>(null) }
-    var committedUnit by remember { mutableStateOf<ReaderUnit?>(null) }
-    var zoomTransform by remember(current.startIndex, layoutKey) { mutableStateOf(ZoomTransform.Identity) }
-    var detailTiles by remember(current.startIndex, layoutKey) { mutableStateOf<List<DetailTile>>(emptyList()) }
+    var zoomTransform by rememberSaveable(bookKey, stateSaver = Saver<ZoomTransform, Float>(
+        save = { it.scale }, restore = { ZoomTransform(it, Offset.Zero) },
+    )) { mutableStateOf(ZoomTransform(if (initialZoomScale.isFinite()) initialZoomScale.coerceIn(1f, 5f) else 1f)) }
+    val zoomChanged = rememberUpdatedState(onZoomScaleChanged)
+    LaunchedEffect(zoomTransform.scale) {
+        delay(250)
+        zoomChanged.value(zoomTransform.scale)
+    }
+    var detailTiles by remember(current.startIndex, layoutKey, bookKey) { mutableStateOf<List<DetailTile>>(emptyList()) }
+    var cropsByBitmap by remember(bookKey) { mutableStateOf<Map<Bitmap, FloatRect>>(emptyMap()) }
+    val latestCrops = rememberUpdatedState(cropsByBitmap)
+    val latestFit = rememberUpdatedState(fitMode)
+    val latestCropEnabled = rememberUpdatedState(cropBorders)
+    val latestKeepZoom = rememberUpdatedState(keepZoom)
+    val latestPanSensitivity = rememberUpdatedState(panSensitivity)
+    val latestMomentumStrength = rememberUpdatedState(momentumStrength)
+    val latestTotalPages = rememberUpdatedState(totalPages)
     val latestCurrent = rememberUpdatedState(current)
     val latestPrevious = rememberUpdatedState(previous)
     val latestNext = rememberUpdatedState(next)
@@ -97,6 +121,31 @@ fun PageTurnReader(
     val decodeRegions = rememberUpdatedState(onDecodeRegions)
     val tracker = remember { VelocityTracker() }
     var motionJob by remember { mutableStateOf<Job?>(null) }
+
+    fun geometryFor(unit: ReaderUnit): List<PageGeometry> = ReaderGeometry.layout(
+        viewport,
+        unit.pages.map { (_, bitmap) -> Size(bitmap.width.toFloat(), bitmap.height.toFloat()) },
+        unit.pages.map { (_, bitmap) ->
+            if (latestCropEnabled.value) latestCrops.value[bitmap] ?: ReaderGeometry.fullCrop else ReaderGeometry.fullCrop
+        },
+        latestFit.value,
+    )
+    fun contentFor(unit: ReaderUnit): FloatRect = ReaderGeometry.bounds(geometryFor(unit))
+    fun startZoomFor(unit: ReaderUnit, scale: Float): ZoomTransform = ZoomBounds.pageStart(scale, viewport, contentFor(unit))
+
+    // Examine only small previews, and retain crop results only for the three live units.
+    LaunchedEffect(bookKey, cropBorders, current.pages, previous?.pages, next?.pages) {
+        if (!cropBorders) {
+            cropsByBitmap = emptyMap()
+            return@LaunchedEffect
+        }
+        val bitmaps = (current.pages + previous?.pages.orEmpty() + next?.pages.orEmpty()).map { it.second }.distinct()
+        val known = cropsByBitmap
+        cropsByBitmap = withContext(Dispatchers.Default) {
+            bitmaps.associateWith { bitmap -> known[bitmap] ?: BorderCrop.detect(bitmap) }
+        }
+    }
+
     fun animateZoom(target: ZoomTransform, duration: Int = 280) {
         motionJob?.cancel()
         val start = zoomTransform
@@ -106,122 +155,104 @@ fun PageTurnReader(
             }
         }
     }
-    fun resetZoom() {
-        animateZoom(ZoomTransform.Identity)
-    }
+    fun resetZoom() = animateZoom(startZoomFor(latestCurrent.value, 1f))
     fun glide(velocity: Offset) {
-        if (zoomTransform.scale <= 1.01f) return
-        val fitted = ZoomBounds.fittedContentRect(viewport, latestCurrent.value.pages.map { (_, bitmap) ->
-            Size(bitmap.width.toFloat(), bitmap.height.toFloat())
-        })
-        val target = ZoomMotion.glideTarget(zoomTransform, velocity * 1.5f, viewport, fitted)
+        val content = contentFor(latestCurrent.value)
+        if (!ZoomBounds.hasOverflow(viewport, content, zoomTransform.scale)) return
+        val target = ZoomMotion.glideTarget(
+            zoomTransform, velocity * latestPanSensitivity.value, viewport, content, latestMomentumStrength.value,
+        )
         if (target.pan != zoomTransform.pan) animateZoom(target, 420)
     }
 
     fun zoomToPageWidth(tapPosition: Offset) {
         if (viewport.width <= 0f || viewport.height <= 0f) return
-        val pageSizes = latestCurrent.value.pages.map { (_, bitmap) ->
-            Size(bitmap.width.toFloat(), bitmap.height.toFloat())
-        }
-        if (pageSizes.isEmpty()) return
-        val slotWidth = viewport.width / pageSizes.size
-        val pageIndex = (tapPosition.x / slotWidth).toInt().coerceIn(pageSizes.indices)
-        animateZoom(ZoomBounds.fitPageToWidth(viewport, pageSizes, pageIndex))
+        val geometry = geometryFor(latestCurrent.value)
+        if (geometry.isEmpty()) return
+        val slotWidth = viewport.width / geometry.size
+        val pageIndex = (tapPosition.x / slotWidth).toInt().coerceIn(geometry.indices)
+        val fitted = ZoomBounds.fitPageToWidth(viewport, geometry, pageIndex, ReaderGeometry.bounds(geometry))
+        val targetScale = if (fitted.scale <= zoomTransform.scale + .01f) {
+            (zoomTransform.scale * 2f).coerceAtLeast(2f).coerceAtMost(5f)
+        } else fitted.scale
+        animateZoom(ZoomBounds.pageStart(targetScale, viewport, ReaderGeometry.bounds(geometry), fitted.pan.x))
     }
 
     fun onDoubleTap(position: Offset) {
+        if (turnState.settling || turnState.committedUnit != null) return
         if (zoomTransform.scale > 1.01f) resetZoom() else zoomToPageWidth(position)
     }
 
     val transform = rememberTransformableState { scale, translation, _ ->
+        if (!turnState.settling && turnState.committedUnit == null) {
+            motionJob?.cancel()
+            zoomTransform = zoomTransform.transformBy(scale, translation, viewport, contentFor(latestCurrent.value), latestPanSensitivity.value)
+        }
+    }
+    val currentGeometry = geometryFor(current)
+    var zoomPageIndex by remember(bookKey) { mutableIntStateOf(current.startIndex) }
+    LaunchedEffect(viewport, current.startIndex, layoutKey, bookKey, currentGeometry) {
+        val scale = if (current.startIndex != zoomPageIndex && !latestKeepZoom.value) 1f else zoomTransform.scale
+        zoomPageIndex = current.startIndex
+        zoomTransform = ZoomBounds.pageStart(scale, viewport, ReaderGeometry.bounds(currentGeometry))
+    }
+
+    LaunchedEffect(current.startIndex, bookKey) {
+        settleJob?.cancel()
         motionJob?.cancel()
-        val fitted = ZoomBounds.fittedContentRect(viewport, latestCurrent.value.pages.map { (_, bitmap) ->
-            Size(bitmap.width.toFloat(), bitmap.height.toFloat())
-        })
-        zoomTransform = zoomTransform.transformBy(scale, translation, viewport, fitted)
+        turnState.acknowledge(current.startIndex)
+        turnState.clearGesture()
     }
-
-    LaunchedEffect(viewport, current.startIndex, layoutKey) {
-        val fitted = ZoomBounds.fittedContentRect(viewport, current.pages.map { (_, bitmap) ->
-            Size(bitmap.width.toFloat(), bitmap.height.toFloat())
-        })
-        zoomTransform = zoomTransform.copy(
-            pan = ZoomBounds.clampPan(viewport, fitted, zoomTransform.scale, zoomTransform.pan),
-        )
-    }
-
-    LaunchedEffect(current.startIndex, layoutKey, style) {
+    LaunchedEffect(layoutKey, bookKey, fitMode, cropBorders) {
         settleJob?.cancel()
         motionJob?.cancel()
         turnState.reset()
-        committedUnit = null
     }
 
-    LaunchedEffect(current.startIndex, layoutKey, viewport, zoomTransform.scale, zoomTransform.pan, current.fullResolutionPages) {
-        if (zoomTransform.scale <= 1.05f || viewport.width <= 0f || viewport.height <= 0f) {
-            detailTiles = emptyList()
-            return@LaunchedEffect
-        }
-        delay(90)
+    LaunchedEffect(current.startIndex, layoutKey, bookKey, viewport, zoomTransform, currentGeometry, current.fullResolutionPages) {
         detailTiles = emptyList()
+        if (viewport.width <= 0f || viewport.height <= 0f) return@LaunchedEffect
+        val visible = ReaderGeometry.visibleViewport(viewport, zoomTransform)
+        val regions = current.pages.mapIndexed { slot, (pageIndex, preview) ->
+            val source = current.fullResolutionPages[pageIndex]
+            val geometry = currentGeometry.getOrNull(slot)
+            val previewScale = geometry?.let { it.destination.width / it.crop.width / preview.width * zoomTransform.scale } ?: 0f
+            if (source == null || geometry == null || previewScale <= 1.05f) null
+            else geometry.visibleSource(visible, Size(source.width.toFloat(), source.height.toFloat()))
+        }
+        val plan = DetailTilePlanner.plan(regions)
+        if (plan.requests.isEmpty()) return@LaunchedEffect
+        delay(90)
         val result = mutableListOf<DetailTile>()
-        val slotWidth = viewport.width / current.pages.size.coerceAtLeast(1)
-        val viewportLeft = -zoomTransform.pan.x / zoomTransform.scale
-        val viewportTop = -zoomTransform.pan.y / zoomTransform.scale
-        val viewportRight = (viewport.width - zoomTransform.pan.x) / zoomTransform.scale
-        val viewportBottom = (viewport.height - zoomTransform.pan.y) / zoomTransform.scale
-        current.pages.forEachIndexed { pageSlot, (pageIndex, preview) ->
-            val source = current.fullResolutionPages[pageIndex] ?: return@forEachIndexed
-            val imageScale = min(slotWidth / preview.width, viewport.height / preview.height)
-            val imageWidth = preview.width * imageScale
-            val imageHeight = preview.height * imageScale
-            val imageLeft = slotWidth * pageSlot + (slotWidth - imageWidth) / 2f
-            val imageTop = (viewport.height - imageHeight) / 2f
-            val left = maxOf(imageLeft, viewportLeft)
-            val top = maxOf(imageTop, viewportTop)
-            val right = minOf(imageLeft + imageWidth, viewportRight)
-            val bottom = minOf(imageTop + imageHeight, viewportBottom)
-            if (right <= left || bottom <= top) return@forEachIndexed
-            val region = Rect(
-                ((left - imageLeft) / imageScale * source.width / preview.width).toInt().coerceIn(0, source.width - 1),
-                ((top - imageTop) / imageScale * source.height / preview.height).toInt().coerceIn(0, source.height - 1),
-                (((right - imageLeft) / imageScale * source.width / preview.width).toInt() + 1).coerceIn(1, source.width),
-                (((bottom - imageTop) / imageScale * source.height / preview.height).toInt() + 1).coerceIn(1, source.height),
-            )
-            val tileSize = 512
-            val regions = mutableListOf<Rect>()
-            tileLoop@ for (top in region.top until region.bottom step tileSize) {
-                for (left in region.left until region.right step tileSize) {
-                    if (result.size + regions.size >= 20) break@tileLoop
-                    val tileRegion = Rect(left, top, minOf(left + tileSize, region.right), minOf(top + tileSize, region.bottom))
-                    regions += tileRegion
-                }
-            }
-            decodeRegions.value(source, regions).forEachIndexed { index, bitmap ->
-                bitmap?.let { result += DetailTile(pageIndex, regions[index], it) }
+        for ((slot, requests) in plan.requests.groupBy { it.pageSlot }) {
+            ensureActive()
+            val pageIndex = current.pages[slot].first
+            val source = current.fullResolutionPages[pageIndex] ?: continue
+            val androidRegions = requests.map { it.region.let { region -> Rect(region.left, region.top, region.right, region.bottom) } }
+            decodeRegions.value(source, androidRegions, plan.sampleSize).forEachIndexed { index, bitmap ->
+                if (bitmap != null && index < requests.size) result += DetailTile(pageIndex, requests[index].region, bitmap)
             }
         }
+        ensureActive()
         detailTiles = result
     }
 
     fun neighborFor(offset: Float): ReaderUnit? {
-        val forward = (offset < 0f) xor rightToLeft
         val frame = turnState.snapshot
-        return if (forward) frame?.next ?: latestNext.value else frame?.previous ?: latestPrevious.value
+        if (frame != null) return frame.neighbor(offset, rightToLeft)
+        return if ((offset < 0f) xor rightToLeft) latestNext.value else latestPrevious.value
     }
 
     fun settle(velocity: Float, cancelled: Boolean = false) {
-        val captured = turnState.release(velocity / density, width, rightToLeft, cancelled)
-            ?: return
+        val captured = turnState.release(velocity / density, width, rightToLeft, cancelled) ?: return
         val remaining = (abs(captured.destination - captured.start) / width).coerceIn(0f, 1f)
         settleJob = scope.launch {
             try {
                 animate(captured.start, captured.destination, animationSpec = tween((100 + remaining * 140).toInt())) { value, _ ->
                     turnState.updateAnimatedOffset(value)
                 }
-                val target = turnState.completeSettle()
-                if (target != null) {
-                    committedUnit = target
+                turnState.completeSettle { target ->
+                    zoomTransform = startZoomFor(target, if (latestKeepZoom.value) zoomTransform.scale else 1f)
                     turn.value(target)
                 }
             } finally {
@@ -233,120 +264,109 @@ fun PageTurnReader(
     Box(modifier.fillMaxSize().clipToBounds().onSizeChanged {
         width = it.width.toFloat()
         viewport = Size(it.width.toFloat(), it.height.toFloat())
-    }.pointerInput(current.startIndex, layoutKey, style, rightToLeft) {
-            awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                motionJob?.cancel()
-                if (latestSettling.value) return@awaitEachGesture
-                tracker.resetTracking()
-                tracker.addPosition(down.uptimeMillis, down.position)
-                var dragging = false
-                var dragOrigin = 0f
-                var lastPosition = down.position
-                val zoomEdgeSwipe = ZoomEdgeSwipe()
-                var cancelled = false
-                var forwardBoundaryOffset: Float? = null
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    val change = event.changes.firstOrNull { it.id == down.id }
-                    if (change == null) {
-                        cancelled = true
-                        break
-                    }
-                    if (event.changes.count { it.pressed } > 1 || (change.isConsumed && dragging)) {
-                        cancelled = true
-                        break
-                    }
-                    val pointerDelta = change.position - lastPosition
-                    lastPosition = change.position
-                    tracker.addPosition(change.uptimeMillis, change.position)
-                    val movement = change.position - down.position
-                    if (!change.pressed) {
-                        val velocity = tracker.calculateVelocity()
-                        if (dragging) {
-                            val boundaryOffset = forwardBoundaryOffset
-                            settle(velocity.x)
-                            if (boundaryOffset != null && TurnNavigation.shouldComplete(boundaryOffset / density,
-                                    velocity.x / density, width / density)) endReached.value()
-                        }
-                        else if (movement.getDistance() > viewConfiguration.touchSlop) glide(Offset(velocity.x, velocity.y))
-                        break
-                    }
-                    if (zoomTransform.scale > 1.01f && !dragging) {
-                        val fitted = ZoomBounds.fittedContentRect(viewport, latestCurrent.value.pages.map { (_, bitmap) ->
-                            Size(bitmap.width.toFloat(), bitmap.height.toFloat())
-                        })
-                        val horizontal = abs(pointerDelta.x) > abs(pointerDelta.y)
-                        val canTurn = horizontal && ZoomBounds.canTurnAtHorizontalEdge(
-                            viewport, fitted, zoomTransform.scale, zoomTransform.pan, pointerDelta.x,
-                        )
-                        val edgeOffset = zoomEdgeSwipe.drag(pointerDelta.x, canTurn, viewConfiguration.touchSlop)
-                            ?: continue
-                        dragging = true
-                        dragOrigin = movement.x - edgeOffset
-                        turnState.capture(latestCurrent.value, latestPrevious.value, latestNext.value)
-                    }
-                    if (!dragging && abs(movement.x) > viewConfiguration.touchSlop && abs(movement.x) > abs(movement.y)) {
-                        dragging = true
-                        dragOrigin = sign(movement.x) * viewConfiguration.touchSlop
-                        turnState.capture(latestCurrent.value, latestPrevious.value, latestNext.value)
-                    }
-                    if (dragging) {
-                        val proposed = TurnNavigation.offsetAfterTouchSlop(movement.x, dragOrigin).coerceIn(-width, width)
-                        val hasNeighbor = neighborFor(proposed) != null
-                        val forward = (proposed < 0f) xor rightToLeft
-                        forwardBoundaryOffset = if (!hasNeighbor && forward) proposed else null
-                        turnState.dragTo(proposed, hasNeighbor = hasNeighbor)
-                        change.consume()
-                    }
+    }.pointerInput(current.startIndex, layoutKey, rightToLeft, bookKey, fitMode, cropBorders) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            motionJob?.cancel()
+            // The settled frame remains visible until the asynchronous parent acknowledges it.
+            if (latestSettling.value || turnState.committedUnit != null) return@awaitEachGesture
+            tracker.resetTracking()
+            tracker.addPosition(down.uptimeMillis, down.position)
+            var dragging = false
+            var panning = false
+            var dragOrigin = 0f
+            var lastPosition = down.position
+            val zoomEdgeSwipe = ZoomEdgeSwipe()
+            var cancelled = false
+            var forwardBoundaryOffset: Float? = null
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id }
+                if (change == null) {
+                    cancelled = true
+                    break
                 }
-                if (cancelled) settle(0f, cancelled = true)
+                if (event.changes.count { it.pressed } > 1 || (change.isConsumed && dragging)) {
+                    cancelled = true
+                    break
+                }
+                val pointerDelta = change.position - lastPosition
+                lastPosition = change.position
+                tracker.addPosition(change.uptimeMillis, change.position)
+                val movement = change.position - down.position
+                if (!change.pressed) {
+                    val velocity = tracker.calculateVelocity()
+                    if (dragging) {
+                        val boundaryOffset = forwardBoundaryOffset
+                        settle(velocity.x)
+                        if (boundaryOffset != null && TurnNavigation.shouldComplete(
+                                boundaryOffset / density, velocity.x / density, width / density,
+                            )) endReached.value()
+                    } else if (panning) glide(Offset(velocity.x, velocity.y))
+                    break
+                }
+                val content = contentFor(latestCurrent.value)
+                if (ZoomBounds.hasOverflow(viewport, content, zoomTransform.scale) && !dragging) {
+                    // A mostly vertical reading drag must not become an edge turn due to jitter.
+                    val horizontal = abs(movement.x) > abs(movement.y) * 1.2f && abs(pointerDelta.x) > abs(pointerDelta.y)
+                    val canTurn = horizontal && ZoomBounds.canTurnAtHorizontalEdge(
+                        viewport, content, zoomTransform.scale, zoomTransform.pan, pointerDelta.x,
+                    )
+                    val edgeOffset = zoomEdgeSwipe.drag(pointerDelta.x, canTurn, viewConfiguration.touchSlop)
+                    if (edgeOffset == null) {
+                        if (panning || movement.getDistance() > viewConfiguration.touchSlop) {
+                            val delta = if (panning) pointerDelta else movement * (1f - viewConfiguration.touchSlop / movement.getDistance())
+                            panning = true
+                            zoomTransform = zoomTransform.transformBy(1f, delta, viewport, content, latestPanSensitivity.value)
+                            change.consume()
+                        }
+                        continue
+                    }
+                    dragging = true
+                    dragOrigin = movement.x - edgeOffset
+                    turnState.capture(latestCurrent.value, latestPrevious.value, latestNext.value)
+                }
+                if (!dragging && abs(movement.x) > viewConfiguration.touchSlop && abs(movement.x) > abs(movement.y)) {
+                    dragging = true
+                    dragOrigin = sign(movement.x) * viewConfiguration.touchSlop
+                    turnState.capture(latestCurrent.value, latestPrevious.value, latestNext.value)
+                }
+                if (dragging) {
+                    val proposed = TurnNavigation.offsetAfterTouchSlop(movement.x, dragOrigin).coerceIn(-width, width)
+                    val hasNeighbor = neighborFor(proposed) != null
+                    val forward = (proposed < 0f) xor rightToLeft
+                    val frame = turnState.snapshot
+                    forwardBoundaryOffset = if (!hasNeighbor && forward && frame != null && isActualForwardEnd(frame.current, latestTotalPages.value)) proposed else null
+                    turnState.dragTo(proposed, hasNeighbor = hasNeighbor)
+                    change.consume()
+                }
             }
-        }.pointerInput(current.startIndex, layoutKey) {
-            detectTapGestures(
-                onTap = { toggle.value() },
-                onDoubleTap = ::onDoubleTap,
-            )
-        }) {
-        Canvas(Modifier.fillMaxSize().transformable(state = transform, canPan = { zoomTransform.scale > 1.01f }).graphicsLayer {
-            scaleX = zoomTransform.scale; scaleY = zoomTransform.scale
-            translationX = zoomTransform.pan.x; translationY = zoomTransform.pan.y
-        }) {
+            if (cancelled) settle(0f, cancelled = true)
+        }
+    }.pointerInput(current.startIndex, layoutKey, bookKey, fitMode, cropBorders) {
+        detectTapGestures(onTap = { toggle.value() }, onDoubleTap = ::onDoubleTap)
+    }) {
+        // Pinch recognition leaves single-finger pan/turn/fling to the viewport handler.
+        Canvas(Modifier.fillMaxSize().transformable(state = transform, canPan = { false })) {
             drawRect(Color.Black)
             val frame = turnState.snapshot
-            val drag = ZoomBounds.canvasOffsetForViewportDrag(turnState.offset, zoomTransform.scale)
-            val turnWidth = ZoomBounds.canvasTurnWidth(size.width, zoomTransform.scale)
-            val drawnCurrent = committedUnit ?: frame?.current ?: current
-            val drawnPrevious = frame?.previous ?: previous
-            val drawnNext = frame?.next ?: next
-            val target = if ((drag < 0f) xor rightToLeft) drawnNext else drawnPrevious
-            if (abs(drag) < 0.1f || target == null) {
-                drawUnit(drawnCurrent)
-            } else when (style) {
-                PageTurnStyle.PHOTO_SLIDE -> {
-                    drawUnit(target, ZoomBounds.pageTurnNeighborOffset(turnState.offset, size.width, zoomTransform.scale))
-                    drawUnit(drawnCurrent, drag)
-                }
-                PageTurnStyle.SLIDING_SHEET -> {
-                    drawUnit(target)
-                    val edge = if (drag < 0f) turnWidth + drag else drag
-                    val shadowWidth = min(24f * density / zoomTransform.scale, turnWidth * 0.05f)
-                    val left = if (drag < 0f) edge else edge - shadowWidth
-                    val colors = if (drag < 0f) listOf(Color.Black.copy(alpha = .5f), Color.Transparent)
-                        else listOf(Color.Transparent, Color.Black.copy(alpha = .5f))
-                    drawRect(Brush.horizontalGradient(colors, left, left + shadowWidth), Offset(left, 0f), Size(shadowWidth, size.height))
-                    drawUnit(drawnCurrent, drag)
-                }
-                PageTurnStyle.PAPER_CURL -> drawCurl(drawnCurrent, target, drag, turnWidth)
-            }
-            if (abs(drag) < 0.1f) {
-                detailTiles.forEach { tile ->
-                    drawRegionTile(drawnCurrent, tile.pageIndex, tile.region, tile.bitmap)
-                }
+            val drag = turnState.offset
+            val drawnCurrent = turnState.committedUnit ?: frame?.current ?: latestCurrent.value
+            val target = if (frame != null) frame.neighbor(drag, rightToLeft) else neighborFor(drag)
+            val geometry = geometryFor(drawnCurrent)
+            if (abs(drag) < .1f || target == null) {
+                drawViewportUnit(drawnCurrent, geometry, 0f, zoomTransform, detailTiles)
+            } else {
+                val targetGeometry = geometryFor(target)
+                val targetZoom = ZoomBounds.pageStart(
+                    if (latestKeepZoom.value) zoomTransform.scale else 1f, size, ReaderGeometry.bounds(targetGeometry),
+                )
+                drawViewportUnit(target, targetGeometry, ZoomBounds.pageTurnNeighborOffset(drag, size.width, 1f), targetZoom)
+                drawViewportUnit(drawnCurrent, geometry, drag, zoomTransform)
             }
         }
         if (zoomTransform.scale > 1.01f && showZoomReset) {
-            Surface(Modifier.align(Alignment.TopEnd).padding(14.dp), color = Color(0xB811151E),
+            Surface(Modifier.align(Alignment.TopEnd).padding(14.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = .94f),
                 shape = RoundedCornerShape(50)) {
                 TextButton(onClick = ::resetZoom) { Text("Reset zoom") }
             }
@@ -354,65 +374,46 @@ fun PageTurnReader(
     }
 }
 
-private fun DrawScope.drawUnit(unit: ReaderUnit, offset: Float = 0f, alpha: Float = 1f) {
-    if (unit.pages.isEmpty()) return
-    drawRect(Color.Black.copy(alpha = alpha), topLeft = Offset(offset, 0f), size = size)
-    val slot = size.width / unit.pages.size
-    unit.pages.forEachIndexed { index, (_, bitmap) ->
-        val scale = min(slot / bitmap.width, size.height / bitmap.height)
-        val w = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
-        val h = (bitmap.height * scale).roundToInt().coerceAtLeast(1)
-        drawImage(bitmap.asImageBitmap(), dstOffset = IntOffset((offset + slot * index + (slot - w) / 2).roundToInt(), ((size.height - h) / 2).roundToInt()),
-            dstSize = IntSize(w, h), alpha = alpha, filterQuality = FilterQuality.Medium)
-    }
-}
+private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
-private fun DrawScope.drawRegionTile(
+/** Clip before scaling so a zoomed outgoing page cannot overlap the incoming viewport. */
+private fun DrawScope.drawViewportUnit(
     unit: ReaderUnit,
-    pageIndex: Int,
-    region: Rect,
-    bitmap: Bitmap,
+    geometry: List<PageGeometry>,
+    screenOffset: Float,
+    zoom: ZoomTransform,
+    tiles: List<DetailTile> = emptyList(),
 ) {
-    val slot = size.width / unit.pages.size.coerceAtLeast(1)
-    val slotIndex = unit.pages.indexOfFirst { it.first == pageIndex }
-    if (slotIndex < 0) return
-    val preview = unit.pages[slotIndex].second
-    val source = unit.fullResolutionPages[pageIndex] ?: return
-    val fit = min(slot / preview.width, size.height / preview.height)
-    val imageWidth = preview.width * fit
-    val imageHeight = preview.height * fit
-    val left = slot * slotIndex + (slot - imageWidth) / 2f + region.left.toFloat() / source.width * imageWidth
-    val top = (size.height - imageHeight) / 2f + region.top.toFloat() / source.height * imageHeight
-    val width = region.width().toFloat() / source.width * imageWidth
-    val height = region.height().toFloat() / source.height * imageHeight
-    drawImage(bitmap.asImageBitmap(), dstOffset = IntOffset(left.roundToInt(), top.roundToInt()),
-        dstSize = IntSize(width.roundToInt().coerceAtLeast(1), height.roundToInt().coerceAtLeast(1)),
-        filterQuality = FilterQuality.High)
+    clipRect(left = screenOffset, top = 0f, right = screenOffset + size.width, bottom = size.height) {
+        withTransform({
+            translate(left = screenOffset + zoom.pan.x, top = zoom.pan.y)
+            scale(zoom.scale, zoom.scale, pivot = Offset(size.width / 2f, size.height / 2f))
+        }) {
+            drawRect(Color.Black)
+            unit.pages.forEachIndexed { slot, (_, bitmap) ->
+                val page = geometry.getOrNull(slot) ?: return@forEachIndexed
+                val source = Size(bitmap.width.toFloat(), bitmap.height.toFloat())
+                val full = page.sourceToDisplay(FloatRect(Offset.Zero, source), source)
+                clipRect(page.destination.left, page.destination.top, page.destination.right, page.destination.bottom) {
+                    drawFloatingBitmap(bitmap, full)
+                }
+            }
+            tiles.forEach { tile ->
+                val slot = unit.pages.indexOfFirst { it.first == tile.pageIndex }
+                val page = geometry.getOrNull(slot) ?: return@forEach
+                val source = unit.fullResolutionPages[tile.pageIndex] ?: return@forEach
+                val destination = page.sourceToDisplay(tile.region.asFloatRect(), Size(source.width.toFloat(), source.height.toFloat()))
+                clipRect(page.destination.left, page.destination.top, page.destination.right, page.destination.bottom) {
+                    drawFloatingBitmap(tile.bitmap, destination)
+                }
+            }
+        }
+    }
 }
 
-/** A clipped front sheet and curved, reflected paper band reveal the ready neighbor beneath. */
-private fun DrawScope.drawCurl(front: ReaderUnit, underneath: ReaderUnit, offset: Float, turnWidth: Float) {
-    drawUnit(underneath)
-    val leftward = offset < 0f
-    val travel = abs(offset).coerceIn(0f, turnWidth)
-    val crease = if (leftward) turnWidth - travel else travel
-    val fold = min(turnWidth * .18f, min(travel * .6f, (turnWidth - travel) * .6f))
-    if (leftward) clipRect(right = crease) { drawUnit(front) }
-    else clipRect(left = crease) { drawUnit(front) }
-    if (fold < 1f) return
-    val direction = if (leftward) -1f else 1f
-    val path = Path().apply {
-        moveTo(crease, 0f)
-        cubicTo(crease + direction * fold, size.height * .08f, crease + direction * fold, size.height * .92f, crease, size.height)
-        cubicTo(crease - direction * fold * .25f, size.height * .8f, crease - direction * fold * .25f, size.height * .2f, crease, 0f)
-        close()
-    }
-    val shadowStart = crease - fold * .3f
-    drawRect(Brush.horizontalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .35f), Color.Transparent), shadowStart, crease + fold * .3f),
-        Offset(shadowStart, 0f), Size(fold * .6f, size.height))
-    drawPath(path, Color(0xFFF5F0E4))
-    clipPath(path) {
-        withTransform({ scale(-1f, 1f, pivot = Offset(crease, size.height / 2)) }) { drawUnit(front, alpha = .18f) }
-        drawRect(Brush.horizontalGradient(listOf(Color.Black.copy(alpha = .25f), Color.Transparent, Color.White.copy(alpha = .45f)), crease - fold, crease + fold))
+/** Android's RectF destinations preserve shared source boundaries without independent integer rounding. */
+private fun DrawScope.drawFloatingBitmap(bitmap: Bitmap, destination: FloatRect) {
+    drawIntoCanvas { canvas ->
+        canvas.nativeCanvas.drawBitmap(bitmap, null, RectF(destination.left, destination.top, destination.right, destination.bottom), bitmapPaint)
     }
 }

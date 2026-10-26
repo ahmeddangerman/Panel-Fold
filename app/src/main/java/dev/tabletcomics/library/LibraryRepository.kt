@@ -31,12 +31,16 @@ class LibraryRepository(context: Context) {
 
     suspend fun syncScannedComics(comics: List<ScannedComic>, legacy: SharedPreferences) = withContext(Dispatchers.IO) {
         val db = helper.writableDatabase
-        db.beginTransaction()
-        try {
+        withBackupTransaction(db, legacy) { preferenceUpdates ->
             val now = System.currentTimeMillis()
-            val legacyValues = legacy.all
+            val legacyValues = legacy.all.toMutableMap()
+            val stored = readBackupComics(db, legacyValues)
+            val storedByUri = stored.associateBy { it.uri }
+            val previous = activeBackupComics(db, stored)
+            val existingUris = db.rawQuery("SELECT uri FROM comics", null).use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) }
+            }
             for (comic in comics) {
-                val exists = db.rawQuery("SELECT 1 FROM comics WHERE uri=?", arrayOf(comic.uri)).use { it.moveToFirst() }
                 val values = android.content.ContentValues().apply {
                     put("title", comic.title)
                     put("format", comic.format)
@@ -44,7 +48,27 @@ class LibraryRepository(context: Context) {
                     put("modified", comic.lastModified)
                     put("folder_path", comic.folderPath)
                 }
-                if (exists) {
+                if (comic.uri in existingUris) {
+                    val old = storedByUri.getValue(comic.uri)
+                    val identity = listOf(comic.title, comic.folderPath, comic.format.lowercase(java.util.Locale.ROOT))
+                    if (old.identity != identity) {
+                        // Some providers recycle document IDs. Preserve the former book separately
+                        // rather than attaching its reading state to a different replacement file.
+                        savePendingBackupComic(db, old)
+                        db.delete("bookmarks", "comic_uri=?", arrayOf(comic.uri))
+                        db.delete("comic_collections", "comic_uri=?", arrayOf(comic.uri))
+                        (BackupSettings.comicKeys + setOf("position", "pages")).forEach { key ->
+                            val preferenceKey = "$key:${comic.uri}"
+                            legacyValues.remove(preferenceKey)
+                            preferenceUpdates[preferenceKey] = RemovedBackupPreference
+                        }
+                        values.put("page_index", -1)
+                        values.put("page_count", 0)
+                        values.put("last_read", 0L)
+                        values.put("added_at", now)
+                        values.put("favorite", 0)
+                        values.put("finished", 0)
+                    }
                     db.update("comics", values, "uri=?", arrayOf(comic.uri))
                 } else {
                     val oldProgress = legacyProgressFor(comic.uri, legacyValues)
@@ -52,15 +76,64 @@ class LibraryRepository(context: Context) {
                     values.put("page_index", oldProgress?.pageIndex ?: -1)
                     values.put("page_count", oldProgress?.pageCount ?: 0)
                     values.put("last_read", if (oldProgress != null) now else 0L)
-                    values.put("added_at", comic.lastModified.takeIf { it > 0 } ?: now)
+                    values.put("added_at", now)
                     values.put("favorite", 0)
                     values.put("finished", 0)
-                    db.insertWithOnConflict("comics", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+                    db.insertOrThrow("comics", null, values)
                 }
             }
-            db.setTransactionSuccessful()
+            db.delete("current_scan", null, null)
+            for (comic in comics) db.execSQL("INSERT OR IGNORE INTO current_scan(uri) VALUES(?)", arrayOf(comic.uri))
+            db.execSQL("INSERT OR REPLACE INTO metadata(key,value) VALUES('has_scan_snapshot',1)")
+            val current = activeBackupComics(db, readBackupComics(db, legacyValues))
+            // A reselected SAF tree can assign new URIs to the same files. Use only the previous
+            // active scan, so old aliases do not make later tree reselections ambiguous.
+            val relocation = backupTargets(previous, current)
+            for (old in previous) {
+                val targetUri = relocation[old.storageKey]?.takeIf { it != old.uri } ?: continue
+                // The previously active location is authoritative, including missing/default keys.
+                applyBackupComic(db, old, targetUri, replaceAssociations = true)
+                preferenceUpdates.putAll(comicPreferenceUpdates(old, targetUri, replaceMissing = true))
+            }
+            applyPendingBackupComics(db, current, preferenceUpdates)
+        }
+    }
+
+    /** Returns a validated, versioned JSON document of at most [BackupLimits.MAX_BYTES]. */
+    suspend fun exportBackup(prefs: SharedPreferences): ByteArray = withContext(Dispatchers.IO) {
+        val db = helper.readableDatabase
+        db.beginTransactionNonExclusive()
+        try {
+            val values = prefs.all
+            val comics = exportBackupComics(db, readBackupComics(db, values))
+            val collections = db.rawQuery("SELECT name FROM collections", null).use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) }
+            } + comics.flatMap { it.collections }
+            LibraryBackupCodec.encode(LibraryBackup(System.currentTimeMillis(), comics, collections, BackupSettings.globals(values)))
         } finally {
             db.endTransaction()
+        }
+    }
+
+    /** Invalid documents throw before writes; unmatched records are kept for a later library scan. */
+    suspend fun importBackup(bytes: ByteArray, prefs: SharedPreferences): BackupImportResult = withContext(Dispatchers.IO) {
+        val backup = LibraryBackupCodec.decode(bytes)
+        val db = helper.writableDatabase
+        withBackupTransaction(db, prefs) { preferenceUpdates ->
+            val current = if (prefs.getString("folder", null).isNullOrBlank()) emptyList()
+                else activeBackupComics(db, readBackupComics(db, prefs.all))
+            val targets = backupTargets(backup.comics, current)
+            backup.collections.forEach { db.execSQL("INSERT OR IGNORE INTO collections(name) VALUES(?)", arrayOf(it)) }
+            for (comic in backup.comics) {
+                val target = targets[comic.storageKey]
+                if (target == null) savePendingBackupComic(db, comic) else {
+                    applyBackupComic(db, comic, target)
+                    preferenceUpdates.putAll(comicPreferenceUpdates(comic, target))
+                    db.delete("backup_pending", "storage_key=?", arrayOf(comic.storageKey))
+                }
+            }
+            preferenceUpdates.putAll(backup.settings)
+            BackupImportResult(targets.size, backup.comics.size - targets.size, backup.collections.size)
         }
     }
 
@@ -164,7 +237,7 @@ class LibraryRepository(context: Context) {
     suspend fun close() = withContext(Dispatchers.IO) { helper.close() }
 }
 
-private class LibraryDatabase(context: Context) : SQLiteOpenHelper(context, "tablet_comics_library.db", null, 1) {
+private class LibraryDatabase(context: Context) : SQLiteOpenHelper(context, "tablet_comics_library.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE comics (
@@ -192,9 +265,17 @@ private class LibraryDatabase(context: Context) : SQLiteOpenHelper(context, "tab
             comic_uri TEXT NOT NULL,page_index INTEGER NOT NULL,created_at INTEGER NOT NULL,
             PRIMARY KEY(comic_uri,page_index)
         )""".trimIndent())
+        createBackupTables(db)
         db.execSQL("CREATE INDEX comics_last_read_idx ON comics(last_read DESC)")
         db.execSQL("CREATE INDEX comics_folder_idx ON comics(folder_path)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) createBackupTables(db)
+    }
+
+    private fun createBackupTables(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS current_scan (uri TEXT PRIMARY KEY NOT NULL)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS backup_pending (storage_key TEXT PRIMARY KEY NOT NULL,payload TEXT NOT NULL)")
+    }
 }

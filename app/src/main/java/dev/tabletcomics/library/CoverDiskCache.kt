@@ -6,14 +6,14 @@ import java.io.File
 import java.security.MessageDigest
 
 class CoverDiskCache(private val directory: File, private val maxBytes: Long = 128L * 1024 * 1024) {
-    fun get(key: String): Bitmap? {
+    @Synchronized fun get(key: String): Bitmap? {
         val file = fileFor(key)
         if (!file.isFile) return null
         file.setLastModified(System.currentTimeMillis())
         return BitmapFactory.decodeFile(file.absolutePath)
     }
 
-    fun put(key: String, bitmap: Bitmap) {
+    @Synchronized fun put(key: String, bitmap: Bitmap) {
         if (!directory.exists() && !directory.mkdirs()) return
         val target = fileFor(key)
         val temporary = File(directory, "${target.name}.tmp")
@@ -27,6 +27,14 @@ class CoverDiskCache(private val directory: File, private val maxBytes: Long = 1
             temporary.delete()
         }
         evictToLimit()
+    }
+
+    @Synchronized fun sizeBytes(): Long = directory.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+
+    @Synchronized fun clear() {
+        directory.listFiles()?.filter { it.isFile }?.forEach { file ->
+            if (!file.delete() && file.exists()) throw java.io.IOException("Could not clear every cached cover. Try again.")
+        }
     }
 
     private fun fileFor(key: String): File {

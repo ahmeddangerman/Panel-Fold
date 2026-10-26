@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,7 +71,8 @@ import dev.tabletcomics.library.nextIssueInNaturalOrder
 import dev.tabletcomics.library.progressFraction
 import dev.tabletcomics.reader.ComicReaderSession
 import dev.tabletcomics.reader.PageTurnReader
-import dev.tabletcomics.reader.PageTurnStyle
+import dev.tabletcomics.reader.PageFit
+import dev.tabletcomics.reader.cleanupInactivePageSourceDirectories
 import dev.tabletcomics.reader.ReaderRestoreState
 import dev.tabletcomics.reader.SeekState
 import dev.tabletcomics.reader.TurnNavigation
@@ -92,6 +94,7 @@ private val archiveIoLock = Mutex()
 private val coverCache = object : android.util.LruCache<String, Bitmap>(8 * 1024 * 1024) {
     override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
 }
+private var coverRevision by mutableIntStateOf(0)
 private const val COVER_PREVIEW_MAX_DIMENSION = 1024
 internal data class Book(
     val uri: Uri,
@@ -159,8 +162,6 @@ private fun ComicApp() {
     var seekDraft by remember { mutableFloatStateOf(0f) }
     var rightToLeft by remember { mutableStateOf(false) }
     var spreads by remember { mutableStateOf(false) }
-    var style by remember { mutableStateOf(PageTurnStyle.PHOTO_SLIDE) }
-    var styleMenu by remember { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(LibraryFilter.ALL) }
     var sort by rememberSaveable { mutableStateOf(LibrarySort.RECENTLY_READ) }
@@ -168,8 +169,19 @@ private fun ComicApp() {
     var selectedCustomCollection by rememberSaveable { mutableStateOf<String?>(null) }
     var coverWidth by remember { mutableIntStateOf(prefs.getInt("coverWidth", 164).coerceIn(120, 240)) }
     var accentName by remember { mutableStateOf(prefs.getString("accent", "violet") ?: "violet") }
+    var lightMode by remember { mutableStateOf(prefs.getBoolean("lightMode", false)) }
     var showReaderProgress by remember { mutableStateOf(prefs.getBoolean("showReaderProgress", false)) }
     var keepScreenAwake by remember { mutableStateOf(prefs.getBoolean("keepScreenAwake", true)) }
+    var panSensitivity by remember { mutableFloatStateOf(prefs.getFloat("panSensitivity", 1.5f).coerceIn(.5f, 2.5f)) }
+    var momentumStrength by remember { mutableFloatStateOf(prefs.getFloat("momentumStrength", 1f).coerceIn(0f, 2f)) }
+    var fitMode by remember(currentBook?.uri) { mutableStateOf(runCatching { PageFit.valueOf(prefs.getString("fit:${currentBook?.uri}", "PAGE")!!) }.getOrDefault(PageFit.PAGE)) }
+    var cropBorders by remember(currentBook?.uri) { mutableStateOf(prefs.getBoolean("crop:${currentBook?.uri}", false)) }
+    var keepZoom by remember(currentBook?.uri) { mutableStateOf(prefs.getBoolean("keepZoom:${currentBook?.uri}", true)) }
+    var bookOpenGeneration by remember { mutableLongStateOf(0L) }
+    var toolsBusy by remember { mutableStateOf(false) }
+    var toolsMessage by remember { mutableStateOf<String?>(null) }
+    var coverStorageBytes by remember { mutableLongStateOf(0L) }
+    val destinationStates = rememberSaveableStateHolder()
     var detailBook by remember { mutableStateOf<Book?>(null) }
     var newCollectionName by remember { mutableStateOf("") }
     var finishDialog by remember { mutableStateOf(false) }
@@ -217,6 +229,13 @@ private fun ComicApp() {
     }
 
     fun closeBook() {
+        bookOpenGeneration++
+        showBookmarks = false
+        showPageThumbnails = false
+        readerOptionsVisible = false
+        finishDialog = false
+        bookmarks = emptyList()
+        pageThumbnails = emptyMap()
         session.close()
         activeReaderState.value = activeReaderState.value.clearActiveBook()
         controlsVisible = false
@@ -224,23 +243,35 @@ private fun ComicApp() {
     }
 
     fun openBook(book: Book, fromBeginning: Boolean = false, restoredPageIndex: Int? = null) {
-        rightToLeft = prefs.getBoolean("rtl:${book.uri}", false)
-        spreads = prefs.getBoolean("spreads:${book.uri}", false)
-        style = runCatching { PageTurnStyle.valueOf(prefs.getString("turnStyle:${book.uri}", "PHOTO_SLIDE")!!) }
-            .getOrDefault(PageTurnStyle.PHOTO_SLIDE)
+        val generation = ++bookOpenGeneration
+        // Stop old publications before joining the persistence queue for the next document.
+        session.close()
+        activeReaderState.value = ReaderRestoreState.Empty
         controlsVisible = false
-        activeReaderState.value = ReaderRestoreState(
-            uri = book.uri.toString(),
-            title = book.title,
-            format = book.format,
-            logicalPage = if (fromBeginning) 0 else restoredPageIndex
-                ?: libraryEntries.firstOrNull { it.uri == book.uri.toString() }?.pageIndex?.takeIf { it >= 0 }
-                ?: prefs.getInt("position:${book.uri}", 0),
-        )
-        if (fromBeginning) scope.launch {
-            repository.resetProgress(book.uri.toString())
-            prefs.edit().remove("position:${book.uri}").remove("pages:${book.uri}").apply()
-            libraryEntries = repository.entries()
+        showBookmarks = false; showPageThumbnails = false; finishDialog = false
+        bookmarks = emptyList(); pageThumbnails = emptyMap()
+        scope.launch {
+            try {
+                val (stored, page) = progressWriteMutex.withLock {
+                    if (fromBeginning) {
+                        repository.resetProgress(book.uri.toString())
+                        prefs.edit().remove("position:${book.uri}").remove("pages:${book.uri}").apply()
+                    }
+                    val entries = repository.entries()
+                    val page = if (fromBeginning) 0 else restoredPageIndex
+                        ?: entries.firstOrNull { it.uri == book.uri.toString() }?.pageIndex?.takeIf { it >= 0 }
+                        ?: prefs.getInt("position:${book.uri}", 0)
+                    entries to page
+                }
+                if (generation != bookOpenGeneration) return@launch
+                libraryEntries = stored
+                rightToLeft = prefs.getBoolean("rtl:${book.uri}", false)
+                spreads = prefs.getBoolean("spreads:${book.uri}", false)
+                activeReaderState.value = ReaderRestoreState(book.uri.toString(), book.title, book.format, page)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                if (generation == bookOpenGeneration) libraryMessage = failure.message ?: "Could not open this comic."
+            }
         }
     }
 
@@ -267,8 +298,12 @@ private fun ComicApp() {
         val active = currentBook ?: return
         val page = session.current?.startIndex ?: return
         scope.launch {
-            currentIsBookmarked = repository.toggleBookmark(active.uri.toString(), page)
-            bookmarks = repository.bookmarks(active.uri.toString())
+            val marked = repository.toggleBookmark(active.uri.toString(), page)
+            val updated = repository.bookmarks(active.uri.toString())
+            if (activeReaderState.value.uri == active.uri.toString()) {
+                currentIsBookmarked = marked
+                bookmarks = updated
+            }
         }
     }
 
@@ -299,13 +334,61 @@ private fun ComicApp() {
         if (uri != null) try {
             context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             prefs.edit().putString("folder", uri.toString()).apply()
+            selectedFolderPath = null
+            selectedCustomCollection = null
             if (folder == uri) scan(uri) else folder = uri
         } catch (error: Exception) { libraryMessage = error.message ?: "Cannot retain folder access." }
+    }
+    fun reloadToolSettings() {
+        coverWidth = prefs.getInt("coverWidth", 164).coerceIn(120, 240)
+        accentName = prefs.getString("accent", "violet") ?: "violet"
+        lightMode = prefs.getBoolean("lightMode", false)
+        showReaderProgress = prefs.getBoolean("showReaderProgress", false)
+        keepScreenAwake = prefs.getBoolean("keepScreenAwake", true)
+        panSensitivity = prefs.getFloat("panSensitivity", 1.5f).coerceIn(.5f, 2.5f)
+        momentumStrength = prefs.getFloat("momentumStrength", 1f).coerceIn(0f, 2f)
+        coverRevision++
+    }
+    val exportBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) scope.launch {
+            toolsBusy = true
+            try {
+                val bytes = progressWriteMutex.withLock { repository.exportBackup(prefs) }
+                withContext(Dispatchers.IO) {
+                    (context.contentResolver.openOutputStream(uri, "wt") ?: throw IOException("Cannot write the selected backup document.")).use { it.write(bytes) }
+                }
+                toolsMessage = "Backup saved. Keep this file somewhere safe."
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { toolsMessage = failure.message ?: "Could not export the backup." }
+            finally { toolsBusy = false }
+        }
+    }
+    val importBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            toolsBusy = true
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    (context.contentResolver.openInputStream(uri) ?: throw IOException("Cannot read the selected backup document.")).use(::readBackupDocument)
+                }
+                val result = progressWriteMutex.withLock { repository.importBackup(bytes, prefs) }
+                reloadToolSettings()
+                libraryEntries = repository.entries()
+                customCollections = repository.customCollections()
+                selectedFolderPath = null; selectedCustomCollection = null
+                folder?.let(::scan)
+                toolsMessage = result.summary
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { toolsMessage = failure.message ?: "Could not restore the backup." }
+            finally { toolsBusy = false }
+        }
+    }
+    LaunchedEffect(destination, coverRevision) {
+        if (destination == AppDestination.SETTINGS) coverStorageBytes = withContext(Dispatchers.IO) { diskCoverCache.sizeBytes() }
     }
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             StagedArchive.cleanupExpired(context.cacheDir)
-            java.io.File(context.cacheDir, "comic-page-source").deleteRecursively()
+            cleanupInactivePageSourceDirectories(context)
         }
     }
     LaunchedEffect(folder) { folder?.let(::scan) }
@@ -336,8 +419,6 @@ private fun ComicApp() {
         val book = currentBook ?: return@LaunchedEffect
         rightToLeft = prefs.getBoolean("rtl:${book.uri}", false)
         spreads = prefs.getBoolean("spreads:${book.uri}", false)
-        style = runCatching { PageTurnStyle.valueOf(prefs.getString("turnStyle:${book.uri}", "PHOTO_SLIDE")!!) }
-            .getOrDefault(PageTurnStyle.PHOTO_SLIDE)
         session.open(book.uri, book.format, activeReaderState.value.logicalPage, spreads && landscape, rightToLeft)
     }
     LaunchedEffect(session.requiresFolderReselection, currentBook) {
@@ -357,10 +438,12 @@ private fun ComicApp() {
             else -> closeBook()
         }
     }
-    LaunchedEffect(currentBook, controlsVisible) {
+    LaunchedEffect(currentBook, controlsVisible, lightMode) {
         val window = (context as? android.app.Activity)?.window ?: return@LaunchedEffect
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         WindowCompat.setDecorFitsSystemWindows(window, currentBook == null)
+        controller.isAppearanceLightStatusBars = lightMode && currentBook == null
+        controller.isAppearanceLightNavigationBars = lightMode && currentBook == null
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (currentBook != null && !controlsVisible) controller.hide(WindowInsetsCompat.Type.systemBars())
         else controller.show(WindowInsetsCompat.Type.systemBars())
@@ -445,7 +528,39 @@ private fun ComicApp() {
     var sortOptionsVisible by remember { mutableStateOf(false) }
     var createCollectionVisible by remember { mutableStateOf(false) }
 
-    ComicsTheme(accentName) {
+    fun clearCollectionScope() { selectedFolderPath = null; selectedCustomCollection = null }
+    fun navigateTo(target: AppDestination) {
+        if (target == AppDestination.LIBRARY) clearCollectionScope()
+        destination = target
+    }
+    val scopeLabel = selectedFolderPath?.let { "Folder · $it" } ?: selectedCustomCollection?.let { "Collection · $it" }
+    val screenStateKey = if (destination == AppDestination.LIBRARY) "LIBRARY:${selectedFolderPath}:${selectedCustomCollection}" else destination.name
+    @Composable fun AppSettings() {
+        SettingsExperience(coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() },
+            accentName, { accentName = it; prefs.edit().putString("accent", it).apply() },
+            lightMode, { lightMode = it; prefs.edit().putBoolean("lightMode", it).apply() },
+            showReaderProgress, { showReaderProgress = it; prefs.edit().putBoolean("showReaderProgress", it).apply() },
+            keepScreenAwake, { keepScreenAwake = it; prefs.edit().putBoolean("keepScreenAwake", it).apply() },
+            folder != null, { picker.launch(null) }, { folder?.let(::scan) }, { licenseDialog = true }) {
+            LibraryToolsPanel(panSensitivity, { panSensitivity = it; prefs.edit().putFloat("panSensitivity", it).apply() },
+                momentumStrength, { momentumStrength = it; prefs.edit().putFloat("momentumStrength", it).apply() },
+                coverStorageBytes, toolsBusy, toolsMessage,
+                { exportBackup.launch("tablet-comics-reading-backup.json") },
+                { importBackup.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
+                { scope.launch {
+                    toolsBusy = true
+                    try {
+                        withContext(Dispatchers.IO) { archiveIoLock.withLock { diskCoverCache.clear(); coverCache.evictAll() } }
+                        coverRevision++
+                        coverStorageBytes = withContext(Dispatchers.IO) { diskCoverCache.sizeBytes() }
+                        toolsMessage = "Cover cache cleared."
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (failure: Exception) { toolsMessage = failure.message ?: "Could not clear the cover cache." }
+                    finally { toolsBusy = false }
+                } })
+        }
+    }
+    ComicsTheme(accentName, darkTheme = !lightMode) {
         if (currentBook == null) {
             val wideLayout = LocalConfiguration.current.screenWidthDp >= 840
             Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -455,44 +570,46 @@ private fun ComicApp() {
                             Image(painterResource(R.drawable.ic_brand_logo), contentDescription = "Tablet Comics", modifier = Modifier.padding(vertical = 20.dp).size(42.dp))
                         }) {
                             AppDestination.entries.forEach { item ->
-                                NavigationRailItem(selected = destination == item, onClick = { destination = item },
+                                NavigationRailItem(selected = destination == item, onClick = { navigateTo(item) },
                                     icon = { Text(when (item) { AppDestination.HOME -> "⌂"; AppDestination.LIBRARY -> "▤"; AppDestination.COLLECTIONS -> "▱"; AppDestination.SETTINGS -> "⚙" }, style = MaterialTheme.typography.titleLarge) },
                                     label = { Text(item.label) }, alwaysShowLabel = true)
                             }
                         }
                         Box(Modifier.weight(1f).fillMaxHeight()) {
-                            when (destination) {
+                            DestinationContent(destinationStates, screenStateKey) {
+when (destination) {
                                 AppDestination.HOME -> ReadingHome(featuredBook, featuredEntry, otherReads, diskCoverCache,
                                     libraryLoading, libraryMessage, books.isNotEmpty(), { startReading(it) }, { detailBook = it }, { picker.launch(null) })
                                 AppDestination.LIBRARY -> ComicLibraryScreen(shelfEntries.mapNotNull { entry -> booksByUri[entry.uri]?.let { it to entry } },
                                     diskCoverCache, searchQuery, { searchQuery = it }, filter, { filter = it }, sort, { sortOptionsVisible = true },
-                                    coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it })
+                                    coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it }, scopeLabel, ::clearCollectionScope)
                                 AppDestination.COLLECTIONS -> CollectionsExperience(collectionShelves, diskCoverCache, { shelf ->
                                     selectedFolderPath = shelf.folderPath; selectedCustomCollection = shelf.customName; destination = AppDestination.LIBRARY
                                 }, { createCollectionVisible = true })
-                                AppDestination.SETTINGS -> SettingsExperience(coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, accentName, { name -> accentName = name; prefs.edit().putString("accent", name).apply() },
-                                    showReaderProgress, { showReaderProgress = it; prefs.edit().putBoolean("showReaderProgress", it).apply() }, keepScreenAwake, { keepScreenAwake = it; prefs.edit().putBoolean("keepScreenAwake", it).apply() }, folder != null, { picker.launch(null) }, { folder?.let(::scan) }, { licenseDialog = true })
+                                AppDestination.SETTINGS -> AppSettings()
                             }
+                        }
                         }
                     }
                 } else {
                     Box(Modifier.weight(1f).fillMaxWidth()) {
-                        when (destination) {
+                        DestinationContent(destinationStates, screenStateKey) {
+when (destination) {
                             AppDestination.HOME -> ReadingHome(featuredBook, featuredEntry, otherReads, diskCoverCache,
                                 libraryLoading, libraryMessage, books.isNotEmpty(), { startReading(it) }, { detailBook = it }, { picker.launch(null) })
                             AppDestination.LIBRARY -> ComicLibraryScreen(shelfEntries.mapNotNull { entry -> booksByUri[entry.uri]?.let { it to entry } },
                                 diskCoverCache, searchQuery, { searchQuery = it }, filter, { filter = it }, sort, { sortOptionsVisible = true },
-                                coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it })
+                                coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it }, scopeLabel, ::clearCollectionScope)
                             AppDestination.COLLECTIONS -> CollectionsExperience(collectionShelves, diskCoverCache, { shelf ->
                                 selectedFolderPath = shelf.folderPath; selectedCustomCollection = shelf.customName; destination = AppDestination.LIBRARY
                             }, { createCollectionVisible = true })
-                            AppDestination.SETTINGS -> SettingsExperience(coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, accentName, { name -> accentName = name; prefs.edit().putString("accent", name).apply() },
-                                showReaderProgress, { showReaderProgress = it; prefs.edit().putBoolean("showReaderProgress", it).apply() }, keepScreenAwake, { keepScreenAwake = it; prefs.edit().putBoolean("keepScreenAwake", it).apply() }, folder != null, { picker.launch(null) }, { folder?.let(::scan) }, { licenseDialog = true })
+                            AppDestination.SETTINGS -> AppSettings()
+                        }
                         }
                     }
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                         AppDestination.entries.forEach { item ->
-                            NavigationBarItem(selected = destination == item, onClick = { destination = item },
+                            NavigationBarItem(selected = destination == item, onClick = { navigateTo(item) },
                                 icon = { Text(when (item) { AppDestination.HOME -> "⌂"; AppDestination.LIBRARY -> "▤"; AppDestination.COLLECTIONS -> "▱"; AppDestination.SETTINGS -> "⚙" }) },
                                 label = { Text(item.label) }, alwaysShowLabel = true)
                         }
@@ -502,13 +619,19 @@ private fun ComicApp() {
         } else {
             Box(Modifier.fillMaxSize().background(Color.Black)) {
                 session.current?.let { unit ->
-                    PageTurnReader(unit, session.previous, session.next, rightToLeft, style,
+                    PageTurnReader(unit, session.previous, session.next, rightToLeft = rightToLeft,
                         layoutKey = "$landscape:$spreadMode:$rightToLeft",
+                        bookKey = currentBook.uri.toString(),
+                        totalPages = session.totalPages,
+                        fitMode = fitMode, cropBorders = cropBorders, keepZoom = keepZoom,
+                        panSensitivity = panSensitivity, momentumStrength = momentumStrength,
+                        initialZoomScale = prefs.getFloat("zoom:${currentBook.uri}", 1f),
+                        onZoomScaleChanged = { prefs.edit().putFloat("zoom:${currentBook.uri}", it).apply() },
                         onTurn = { target -> session.navigate(target.startIndex) },
                         onToggleControls = { controlsVisible = !controlsVisible },
                         onEndReached = { finishDialog = true },
                         showZoomReset = controlsVisible,
-                        onDecodeRegions = { source, regions -> session.decodeRegions(source, regions) })
+                        onDecodeRegions = { source, regions, sample -> session.decodeRegions(source, regions, sample) })
                 }
                 if (session.loading && session.current == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
                 if (session.loading && session.current != null) {
@@ -541,7 +664,7 @@ private fun ComicApp() {
                 if (controlsVisible || session.current == null) {
                     Surface(Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(horizontal = 16.dp)
                         .statusBarsPadding().padding(top = 10.dp),
-                        color = Color(0xC9101218), shape = RoundedCornerShape(18.dp), shadowElevation = 8.dp) {
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = .94f), shape = RoundedCornerShape(18.dp), shadowElevation = 8.dp) {
                         Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             TextButton(onClick = ::closeBook) { Text("‹  Library") }
                             Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
@@ -558,7 +681,7 @@ private fun ComicApp() {
                     Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 14.dp),
                         horizontalAlignment = Alignment.CenterHorizontally) {
                         if (showPageThumbnails) {
-                            LazyRow(Modifier.fillMaxWidth().padding(bottom = 8.dp).background(Color(0xC9101218), RoundedCornerShape(16.dp)).padding(8.dp),
+                            LazyRow(Modifier.fillMaxWidth().padding(bottom = 8.dp).background(MaterialTheme.colorScheme.surface.copy(alpha = .94f), RoundedCornerShape(16.dp)).padding(8.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 items(pageThumbnails.keys.sorted()) { pageIndex ->
                                     Column(Modifier.width(58.dp).clickable { session.navigate(pageIndex) }, horizontalAlignment = Alignment.CenterHorizontally) {
@@ -570,7 +693,7 @@ private fun ComicApp() {
                                 }
                             }
                         }
-                        Surface(color = Color(0xE6101218), shape = RoundedCornerShape(22.dp), shadowElevation = 12.dp) {
+                        Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = .94f), shape = RoundedCornerShape(22.dp), shadowElevation = 12.dp) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = { turn(rightToLeft) }, enabled = rightToLeft || session.previous != null) { Text("‹", style = MaterialTheme.typography.headlineSmall) }
                                 if (session.totalPages > 1) Slider(value = seekDraft.coerceIn(0f, (session.totalPages - 1).toFloat()),
@@ -592,16 +715,31 @@ private fun ComicApp() {
         if (readerOptionsVisible) {
             AlertDialog(onDismissRequest = { readerOptionsVisible = false }, title = { Text("Reading options") },
                 text = { Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState())) {
+                    Text("Page fit", style = MaterialTheme.typography.titleSmall)
+                    PageFit.entries.forEach { mode ->
+                        TextButton(onClick = {
+                            fitMode = mode
+                            currentBook?.let { prefs.edit().putString("fit:${it.uri}", mode.name).apply() }
+                        }) { Text((if (fitMode == mode) "✓  " else "") + when (mode) {
+                            PageFit.PAGE -> "Whole page"; PageFit.WIDTH -> "Fit width"; PageFit.HEIGHT -> "Fit height"
+                        }) }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Trim plain borders", Modifier.weight(1f)); Switch(cropBorders, {
+                            cropBorders = it; currentBook?.let { book -> prefs.edit().putBoolean("crop:${book.uri}", it).apply() }
+                        })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Keep zoom between pages", Modifier.weight(1f)); Switch(keepZoom, {
+                            keepZoom = it; currentBook?.let { book -> prefs.edit().putBoolean("keepZoom:${book.uri}", it).apply() }
+                        })
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) { Text("Read right to left", Modifier.weight(1f)); Switch(rightToLeft, {
                         rightToLeft = it; currentBook?.let { book -> prefs.edit().putBoolean("rtl:${book.uri}", it).apply() }
                     }) }
                     if (landscape) Row(verticalAlignment = Alignment.CenterVertically) { Text("Two-page spreads", Modifier.weight(1f)); Switch(spreads, {
                         spreads = it; currentBook?.let { book -> prefs.edit().putBoolean("spreads:${book.uri}", it).apply() }
                     }) }
-                    Text("Page turn", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
-                    PageTurnStyle.entries.forEach { choice -> TextButton(onClick = {
-                        style = choice; currentBook?.let { book -> prefs.edit().putString("turnStyle:${book.uri}", choice.name).apply() }
-                    }, modifier = Modifier.fillMaxWidth()) { Text(if (style == choice) "✓  ${choice.label}" else choice.label) } }
                     Row(verticalAlignment = Alignment.CenterVertically) { Text("Keep screen awake", Modifier.weight(1f)); Switch(keepScreenAwake, {
                         keepScreenAwake = it; prefs.edit().putBoolean("keepScreenAwake", it).apply()
                     }) }
@@ -649,6 +787,9 @@ private fun ComicApp() {
 
         detailBook?.let { selectedBook ->
             val entry = catalogEntries.firstOrNull { it.uri == selectedBook.uri.toString() }
+            var coverPageInput by remember(selectedBook.uri) { mutableStateOf((prefs.getInt("coverPage:${selectedBook.uri}", 0) + 1).toString()) }
+            var coverWorkBusy by remember(selectedBook.uri) { mutableStateOf(false) }
+            var coverMessage by remember(selectedBook.uri) { mutableStateOf<String?>(null) }
             LaunchedEffect(selectedBook.uri) { newCollectionName = "" }
             ModalBottomSheet(onDismissRequest = { detailBook = null }, containerColor = MaterialTheme.colorScheme.surface) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 28.dp)) {
@@ -687,16 +828,53 @@ private fun ComicApp() {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(onClick = {
                                 scope.launch {
-                                    repository.resetProgress(selectedBook.uri.toString())
-                                    prefs.edit().remove("position:${selectedBook.uri}").remove("pages:${selectedBook.uri}").apply()
+                                    progressWriteMutex.withLock {
+                                        repository.resetProgress(selectedBook.uri.toString())
+                                        prefs.edit().remove("position:${selectedBook.uri}").remove("pages:${selectedBook.uri}").apply()
+                                    }
                                     refreshLibrary()
                                 }
                             }) { Text("Reset progress") }
                             TextButton(onClick = {
                                 detailBook = null
-                                openBook(selectedBook, fromBeginning = true)
+                                startReading(selectedBook, fromBeginning = true)
                             }) { Text("Start from beginning") }
                         }
+                        CoverToolsPanel(coverPageInput, { coverPageInput = it }, entry?.pageCount ?: 0,
+                            coverWorkBusy, coverMessage,
+                            onApply = {
+                                val page = coverPageInput.toIntOrNull()?.minus(1)
+                                if (page != null && page in 0 until ArchiveLimits.MAX_PAGES) scope.launch {
+                                    coverWorkBusy = true
+                                    try {
+                                        val loaded = withContext(Dispatchers.IO) {
+                                            val job = currentCoroutineContext()[Job] ?: throw CancellationException("Cover selection cancelled.")
+                                            archiveIoLock.withLock {
+                                                val bitmap = readCoverBitmap(context, selectedBook, page, { job.ensureActive() }, archiveCancellationRegistrar(job))
+                                                    ?: throw IOException("No image was found on that page.")
+                                                val key = coverPreviewKey(selectedBook, prefs, page)
+                                                diskCoverCache.put(key, bitmap)
+                                                key to bitmap
+                                            }
+                                        }
+                                        prefs.edit().putInt("coverPage:${selectedBook.uri}", page).apply()
+                                        coverCache.put(loaded.first, loaded.second)
+                                        coverRevision++
+                                        coverMessage = "Page ${page + 1} selected as the cover."
+                                    } catch (cancelled: CancellationException) { throw cancelled }
+                                    catch (failure: Exception) { coverMessage = failure.message ?: "Could not select that cover page." }
+                                    finally { coverWorkBusy = false }
+                                }
+                            }, onReset = {
+                                prefs.edit().remove("coverPage:${selectedBook.uri}").apply()
+                                coverPageInput = "1"; coverRevision++
+                                coverMessage = "Default cover restored."
+                            }, onRetry = {
+                                val key = "coverAttempt:${selectedBook.uri}"
+                                prefs.edit().putInt(key, prefs.getInt(key, 0) + 1).apply()
+                                coverRevision++
+                                coverMessage = "Retrying the cover."
+                            })
                         if (customCollections.isNotEmpty()) {
                             Text("Custom collections", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
                             customCollections.forEach { name ->
@@ -817,13 +995,33 @@ private fun scanFolder(context: android.content.Context, uri: Uri, cancellationC
     return found.sortedBy { it.title.lowercase() }
 }
 
+private fun coverPreviewKey(book: Book, prefs: android.content.SharedPreferences, page: Int = prefs.getInt("coverPage:${book.uri}", -1)): String =
+    "${coverCacheKey(book.uri.toString(), book.size, book.lastModified)}#preview-v4-$COVER_PREVIEW_MAX_DIMENSION#page-$page#attempt-${prefs.getInt("coverAttempt:${book.uri}", 0)}"
+
+private fun readCoverBitmap(
+    context: android.content.Context, book: Book, page: Int, cancellationCheck: () -> Unit,
+    registration: dev.tabletcomics.archive.ArchiveCancellationRegistrar,
+): Bitmap? {
+    val format = detectArchiveFormat(context, book.uri, book.format, cancellationCheck, registration)
+    val reader = archiveReader(context, format)
+    val bytes = if (page < 0) reader.readPreview(book.uri, cancellationCheck, registration)
+    else reader.open(book.uri, cancellationCheck, registration).use { archive ->
+        val selected = archive.pages.getOrNull(page) ?: throw IOException("This comic has ${archive.pages.size} pages. Choose a page in that range.")
+        archive.readPage(selected, cancellationCheck, registration)
+    }
+    cancellationCheck()
+    return bytes?.let { decodeImage(it, COVER_PREVIEW_MAX_DIMENSION) }
+}
+
 @Composable
 internal fun coverPreview(book: Book, diskCache: CoverDiskCache): Bitmap? {
     val context = LocalContext.current
-    // Bump this key when preview decoding changes so existing small thumbnails are regenerated.
-    val previewKey = "${coverCacheKey(book.uri.toString(), book.size, book.lastModified)}#preview-v3-$COVER_PREVIEW_MAX_DIMENSION"
-    var preview by remember(previewKey) { mutableStateOf(coverCache.get(previewKey)) }
-    LaunchedEffect(previewKey, book.format) {
+    val prefs = remember(context) { context.getSharedPreferences("reader", 0) }
+    val revision = coverRevision
+    val previewKey = coverPreviewKey(book, prefs)
+    val selectedPage = prefs.getInt("coverPage:${book.uri}", -1)
+    var preview by remember(previewKey, revision) { mutableStateOf(coverCache.get(previewKey)) }
+    LaunchedEffect(previewKey, book.format, revision) {
         if (preview != null) return@LaunchedEffect
         preview = withContext(Dispatchers.IO) { diskCache.get(previewKey) }?.also { coverCache.put(previewKey, it) }
         if (preview != null) return@LaunchedEffect
@@ -832,10 +1030,7 @@ internal fun coverPreview(book: Book, diskCache: CoverDiskCache): Bitmap? {
         val cancellationRegistration = archiveCancellationRegistrar(job)
         preview = archiveIoLock.withLock { withContext(Dispatchers.IO) {
             try {
-                val format = detectArchiveFormat(context, book.uri, book.format, cancellationCheck, cancellationRegistration)
-                archiveReader(context, format)
-                    .readPreview(book.uri, cancellationCheck, cancellationRegistration)
-                    ?.let { decodeImage(it, COVER_PREVIEW_MAX_DIMENSION) }
+                readCoverBitmap(context, book, selectedPage, cancellationCheck, cancellationRegistration)
                     ?.also {
                         coverCache.put(previewKey, it)
                         diskCache.put(previewKey, it)

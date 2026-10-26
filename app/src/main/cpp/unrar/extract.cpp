@@ -1844,13 +1844,18 @@ void CmdExtract::GetFirstVolIfFullSet(const std::wstring &SrcName,bool NewNumber
 
 bool CmdExtract::CheckWinLimit(Archive &Arc,std::wstring &ArcFileName)
 {
-  if (Arc.FileHead.WinSize<=Cmd->WinSizeLimit || Arc.FileHead.WinSize<=Cmd->WinSize)
+  // Stored entries allocate no unpack window. Compressed entries allocate at
+  // least 256 KiB in Unpack::Init, even with a smaller declared dictionary.
+  if (Arc.FileHead.Method==0)
     return true;
-  if (uiDictLimit(Cmd,ArcFileName,Arc.FileHead.WinSize,Max(Cmd->WinSizeLimit,Cmd->WinSize)))
+  uint64 Required=Max(Arc.FileHead.WinSize,uint64(0x40000));
+  if (Required<=Cmd->WinSizeLimit || Required<=Cmd->WinSize)
+    return true;
+  if (uiDictLimit(Cmd,ArcFileName,Required,Max(Cmd->WinSizeLimit,Cmd->WinSize)))
   {
     // No more prompts when extracting other files. Important for GUI versions,
     // where we might not have [Max]WinSize set permanently when extracting.
-    Cmd->WinSizeLimit=Arc.FileHead.WinSize;
+    Cmd->WinSizeLimit=Required;
   }
   else
   {

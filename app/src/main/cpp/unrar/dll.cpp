@@ -468,6 +468,13 @@ void PASCAL RARSetCallback(HANDLE hArcData,UNRARCALLBACK Callback,LPARAM UserDat
   Data->Cmd.UserData=UserData;
 }
 
+void PASCAL RARSetDictionaryLimit(HANDLE hArcData,unsigned long long LimitBytes)
+{
+  DataSet *Data=(DataSet *)hArcData;
+  Data->Cmd.WinSize=0;
+  Data->Cmd.WinSizeLimit=LimitBytes;
+}
+
 
 void PASCAL RARSetProcessDataProc(HANDLE hArcData,PROCESSDATAPROC ProcessDataProc)
 {

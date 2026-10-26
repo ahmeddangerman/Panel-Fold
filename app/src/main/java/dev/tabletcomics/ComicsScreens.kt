@@ -16,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -70,7 +71,7 @@ internal fun ReadingHome(
             BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 32.dp)) {
                 val landscapeFeature = maxWidth >= 680.dp
                 val heroModifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))
-                    .background(Brush.horizontalGradient(listOf(Color(0xFF161B28), tint.copy(alpha = .18f), Color(0xFF10141D))))
+                    .background(Brush.horizontalGradient(listOf(MaterialTheme.colorScheme.surface, tint.copy(alpha = .12f), MaterialTheme.colorScheme.surface)))
                     .padding(22.dp)
                 if (landscapeFeature) Row(heroModifier.heightIn(min = 250.dp, max = 340.dp), verticalAlignment = Alignment.CenterVertically) {
                     CoverPreview(featured, diskCache, Modifier.fillMaxHeight().widthIn(min = 150.dp, max = 220.dp).aspectRatio(.70f).clip(RoundedCornerShape(18.dp)))
@@ -136,6 +137,7 @@ internal fun ComicLibraryScreen(
     onQuery: (String) -> Unit, filter: LibraryFilter, onFilter: (LibraryFilter) -> Unit,
     sort: LibrarySort, onSort: () -> Unit, coverSize: Int, onCoverSize: (Int) -> Unit,
     onOpen: (Book) -> Unit, onDetails: (Book) -> Unit,
+    scopeLabel: String? = null, onClearScope: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 32.dp, end = 28.dp, top = 28.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -144,6 +146,11 @@ internal fun ComicLibraryScreen(
                 placeholder = { Text("Search titles") }, shape = RoundedCornerShape(16.dp))
             TextButton(onClick = onSort) { Text("Sort · ${sort.label}") }
         }
+        if (scopeLabel != null) Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(scopeLabel, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            TextButton(onClick = onClearScope) { Text("All comics") }
+        }
         LazyRow(contentPadding = PaddingValues(horizontal = 28.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(LibraryFilter.entries) { option -> FilterChip(filter == option, { onFilter(option) }, label = { Text(option.label) }) }
             item { TextButton(onClick = { onCoverSize((coverSize + 20).coerceIn(120, 240)) }) { Text("Cover size +") } }
@@ -151,7 +158,7 @@ internal fun ComicLibraryScreen(
         }
         if (books.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("No comics match this view.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else LazyVerticalGrid(GridCells.Adaptive(coverSize.dp), Modifier.fillMaxSize(),
+        } else LazyVerticalGrid(GridCells.Adaptive(coverSize.dp), Modifier.fillMaxSize().testTag("library-grid"),
             contentPadding = PaddingValues(start = 28.dp, end = 28.dp, top = 22.dp, bottom = 28.dp),
             horizontalArrangement = Arrangement.spacedBy(18.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             items(books, key = { it.first.uri.toString() }) { (book, entry) ->
@@ -164,27 +171,32 @@ internal fun ComicLibraryScreen(
 @Composable
 internal fun CollectionsExperience(collections: List<LibraryShelfCollection>, diskCache: CoverDiskCache,
                                    onSelect: (LibraryShelfCollection) -> Unit, onCreate: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 28.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) { Text("Collections", style = MaterialTheme.typography.headlineMedium); Text("A place for every series", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            Button(onClick = onCreate, shape = RoundedCornerShape(14.dp)) { Text("New collection") }
+    androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize().testTag("collections-list"),
+        contentPadding = PaddingValues(horizontal = 32.dp, vertical = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item(key = "header") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Collections", style = MaterialTheme.typography.headlineMedium)
+                    Text("A place for every series", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Button(onClick = onCreate, shape = RoundedCornerShape(14.dp)) { Text("New collection") }
+            }
+            Spacer(Modifier.height(10.dp))
         }
-        Spacer(Modifier.height(22.dp))
-        if (collections.isEmpty()) Text("Collections you create will live here.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            collections.forEach { shelf ->
-                Surface(Modifier.fillMaxWidth().clickable { onSelect(shelf) }, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
-                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (shelf.cover != null) CoverPreview(shelf.cover, diskCache, Modifier.size(62.dp, 84.dp).clip(RoundedCornerShape(10.dp)))
-                        else Surface(Modifier.size(62.dp, 84.dp), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(10.dp)) {
-                            Box(contentAlignment = Alignment.Center) { Text("▤", color = MaterialTheme.colorScheme.primary) }
-                        }
-                        Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
-                            Text(shelf.name, style = MaterialTheme.typography.titleLarge)
-                            Text("${shelf.issueCount} ${if (shelf.issueCount == 1) "comic" else "comics"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Text("Open  ›", color = MaterialTheme.colorScheme.primary)
+        if (collections.isEmpty()) item { Text("Collections you create will live here.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        items(collections, key = { it.key }) { shelf ->
+            Surface(Modifier.fillMaxWidth().clickable { onSelect(shelf) }, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (shelf.cover != null) CoverPreview(shelf.cover, diskCache, Modifier.size(62.dp, 84.dp).clip(RoundedCornerShape(10.dp)))
+                    else Surface(Modifier.size(62.dp, 84.dp), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(10.dp)) {
+                        Box(contentAlignment = Alignment.Center) { Text("▤", color = MaterialTheme.colorScheme.primary) }
                     }
+                    Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
+                        Text(shelf.name, style = MaterialTheme.typography.titleLarge)
+                        Text("${shelf.issueCount} ${if (shelf.issueCount == 1) "comic" else "comics"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Text("Open  ›", color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
@@ -194,13 +206,16 @@ internal fun CollectionsExperience(collections: List<LibraryShelfCollection>, di
 @Composable
 internal fun SettingsExperience(
     coverSize: Int, onCoverSize: (Int) -> Unit, accent: String, onAccent: (String) -> Unit,
+    lightMode: Boolean, onLightMode: (Boolean) -> Unit,
     progress: Boolean, onProgress: (Boolean) -> Unit, keepAwake: Boolean, onKeepAwake: (Boolean) -> Unit,
     hasFolder: Boolean, onChangeFolder: () -> Unit, onRefresh: () -> Unit, onAbout: () -> Unit,
+    extraContent: @Composable ColumnScope.() -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(horizontal = 36.dp, vertical = 30.dp)) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium)
         Text("Make your reading space yours.", Modifier.padding(top = 5.dp, bottom = 22.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         SettingsGroup("Appearance") {
+            SettingSwitch("Light mode", lightMode, onLightMode)
             Text("Cover size · ${coverSize}dp", style = MaterialTheme.typography.titleSmall)
             Slider(coverSize.toFloat(), { onCoverSize(it.roundToInt()) }, valueRange = 120f..240f, steps = 5)
             Text("Accent", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 10.dp))
@@ -219,6 +234,7 @@ internal fun SettingsExperience(
                 if (hasFolder) TextButton(onClick = onRefresh) { Text("Refresh") }
             }
         }
+        extraContent()
         SettingsGroup("About") { TextButton(onClick = onAbout) { Text("About & licenses") } }
     }
 }

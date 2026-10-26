@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
+# NDK r27 supports flexible page sizes; explicit linker alignment also covers
+# toolchains which evaluate their Android options before this project file.
+set(ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES ON)
 project(tablet_unrar LANGUAGES C CXX)
 
 set(UNRAR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/unrar)
@@ -18,8 +21,10 @@ target_compile_definitions(unrar_engine PRIVATE RARDLL SILENT _FILE_OFFSET_BITS=
 target_compile_options(unrar_engine PRIVATE -fPIC -fexceptions -Wno-logical-op-parentheses -Wno-switch -Wno-dangling-else)
 set_target_properties(unrar_engine PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 
-add_library(tablet_unrar SHARED native_unrar.cpp)
+add_library(tablet_unrar SHARED native_unrar.cpp rar_session.cpp)
 target_include_directories(tablet_unrar PRIVATE ${UNRAR_DIR})
 target_compile_definitions(tablet_unrar PRIVATE RARDLL)
 target_compile_options(tablet_unrar PRIVATE -fexceptions)
+target_link_options(tablet_unrar PRIVATE "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
+set_target_properties(tablet_unrar PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 target_link_libraries(tablet_unrar PRIVATE unrar_engine)
