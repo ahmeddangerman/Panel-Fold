@@ -210,9 +210,9 @@ fun PageTurnReader(
     }
 
     LaunchedEffect(current.startIndex, layoutKey, bookKey, viewport, zoomTransform, currentGeometry, current.fullResolutionPages) {
-        detailTiles = emptyList()
         if (viewport.width <= 0f || viewport.height <= 0f) return@LaunchedEffect
-        val visible = ReaderGeometry.visibleViewport(viewport, zoomTransform)
+        // Decode a small buffer around the screen so a normal pan exposes already-sharp pixels.
+        val visible = ReaderGeometry.visibleViewport(viewport, zoomTransform, detailOverscanFraction = .25f)
         val regions = current.pages.mapIndexed { slot, (pageIndex, preview) ->
             val source = current.fullResolutionPages[pageIndex]
             val geometry = currentGeometry.getOrNull(slot)

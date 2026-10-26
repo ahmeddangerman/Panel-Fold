@@ -65,10 +65,12 @@ internal object ReaderGeometry {
     )
 
     /** Inverse of translate(pan), then scale around the viewport center. */
-    fun visibleViewport(viewport: Size, zoom: ZoomTransform): Rect {
+    fun visibleViewport(viewport: Size, zoom: ZoomTransform, detailOverscanFraction: Float = 0f): Rect {
         val center = Offset(viewport.width / 2, viewport.height / 2)
-        val start = center + (Offset.Zero - center - zoom.pan) / zoom.scale
-        val end = center + (Offset(viewport.width, viewport.height) - center - zoom.pan) / zoom.scale
+        val overscan = detailOverscanFraction.coerceAtLeast(0f)
+        val margin = Offset(viewport.width * overscan, viewport.height * overscan)
+        val start = center + (Offset.Zero - margin - center - zoom.pan) / zoom.scale
+        val end = center + (Offset(viewport.width, viewport.height) + margin - center - zoom.pan) / zoom.scale
         return Rect(start, end)
     }
 }

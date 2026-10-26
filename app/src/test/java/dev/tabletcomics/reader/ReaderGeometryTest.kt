@@ -37,6 +37,17 @@ class ReaderGeometryTest {
     }
 
     @Test
+    fun detailViewportIncludesNearbyImageAreaBeforeTheReaderMovesThere() {
+        val viewport = Size(1000f, 1000f)
+        val page = ReaderGeometry.layout(viewport, listOf(Size(2000f, 2000f))).single()
+        val zoom = ZoomTransform(2f, Offset.Zero)
+
+        val visible = ReaderGeometry.visibleViewport(viewport, zoom, detailOverscanFraction = .25f)
+
+        assertEquals(PixelRegion(250, 250, 1750, 1750), page.visibleSource(visible, Size(2000f, 2000f)))
+    }
+
+    @Test
     fun spreadSlotsIndependentlyIntersectTheVisibleViewportRegardlessOfReadingOrder() {
         val viewport = Size(1200f, 800f)
         val geometry = ReaderGeometry.layout(viewport, listOf(Size(600f, 800f), Size(600f, 800f)))
