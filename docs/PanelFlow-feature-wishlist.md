@@ -137,20 +137,6 @@ My notes / changes:
 
 >
 
-### Night reading without color inversion
-
-Keep the reader controls and page surroundings dark while preserving the comic's original colors. Consider an optional page dimmer and a separate, previewable paper-darkening mode for monochrome manga.
-
-- [ ] Want
-- [ ] Skip
-- [ ] Later
-
-Priority: <!-- Must-have / Should-have / Nice-to-have -->
-
-My notes / changes:
-
-> Keep original artwork unchanged by default; avoid full color inversion.
-
 ## 2. Page movement
 
 ### Finger-following flat swipe
@@ -498,20 +484,6 @@ My notes / changes:
 ### Visible reading progress
 
 Present progress clearly on covers and series.
-
-- [ ] Want
-- [ ] Skip
-- [ ] Later
-
-Priority: <!-- Must-have / Should-have / Nice-to-have -->
-
-My notes / changes:
-
->
-
-### Reading-time statistics
-
-Show active reading time per comic and across the library, with daily or weekly history. Pause timing when the app is backgrounded or the screen is off; keep the data local unless sync is added later.
 
 - [ ] Want
 - [ ] Skip
