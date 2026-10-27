@@ -26,6 +26,19 @@ class LibraryBackupCodecTest {
         assertEquals(original, LibraryBackupCodec.decode(LibraryBackupCodec.encode(original)))
     }
 
+    @Test fun pageDimmerSettingsRoundTripAndRejectUnreadableOrInvalidStrengths() {
+        val values = mapOf("pageDimmerEnabled" to true, "pageDimming" to .5f)
+        val original = document().copy(settings = BackupSettings.globals(values))
+        assertEquals(original, LibraryBackupCodec.decode(LibraryBackupCodec.encode(original)))
+        assertEquals(values, original.settings)
+        // Existing backups without the feature remain valid.
+        assertFalse(LibraryBackupCodec.decode(LibraryBackupCodec.encode(document())).settings.containsKey("pageDimming"))
+        listOf(-.01f, .81f, Float.NaN, Float.POSITIVE_INFINITY, "50%").forEach { value ->
+            invalid { BackupSettings.validate("pageDimming", value, false) }
+        }
+        invalid { BackupSettings.validate("pageDimmerEnabled", "true", false) }
+    }
+
     @Test fun corruptUnsupportedTruncatedAndTrailingInputAreRejected() {
         val valid = LibraryBackupCodec.encode(document())
         invalid { LibraryBackupCodec.decode("not a backup".toByteArray()) }

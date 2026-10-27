@@ -6,7 +6,7 @@ An offline Android tablet comic and manga reader written in Kotlin and Jetpack C
 
 Open this directory in Android Studio with JDK 17. Install Android SDK Platform 35, NDK 27.2.12479018, and CMake 3.22.1. The Android Gradle Plugin is pinned to 8.7.3, and the Gradle 8.9 wrapper is included. Build the `app` debug variant with `./gradlew :app:assembleDebug` or from Android Studio.
 
-The current source is beta **0.6.5**. [Download the signed APK](https://github.com/ahmeddangerman/Panel-Fold/raw/refs/heads/main/releases/panelflow-0.6.5-beta.apk) or read the [release notes](releases/0.6.5-beta-notes.md). Build/install verification for the previous beta is recorded in [the stabilization results](docs/beta-stabilization-results.md). It targets Android API 35 and supports devices from API 26. MatePad Pro / HarmonyOS behavior has not been verified on a physical device.
+The current source is beta **0.6.6**. [Download the signed APK](https://github.com/ahmeddangerman/Panel-Fold/raw/refs/heads/main/releases/panelflow-0.6.6-beta.apk) or read the [release notes](releases/0.6.6-beta-notes.md). Build/install verification for the previous beta is recorded in [the stabilization results](docs/beta-stabilization-results.md). It targets Android API 35 and supports devices from API 26. MatePad Pro / HarmonyOS behavior has not been verified on a physical device.
 
 ## Features
 
@@ -20,6 +20,7 @@ The current source is beta **0.6.5**. [Download the signed APK](https://github.c
 - Enable two-page landscape spreads, with the cover shown alone and RTL spread placement.
 - Remember zoom percentage per comic across page turns and reopening; zoomed pages begin at the top. Double-tap zoom-in also aligns the page to the top.
 - Choose a saved light or dark appearance in Settings, with readable accent colors and reader controls in either mode.
+- Enable the page dimmer in the reader's Options, with a saved 0–80% dimming slider for night reading. It dims the displayed artwork through zooming and page turns, without changing image files or inverting colors; the reader controls keep their existing brightness.
 - Show a tablet-friendly cover grid with adjustable cover sizes, reading status and page progress on every cover.
 - Resume one of the ten most recently read unfinished comics from the top row; filter by All, Reading, Unread, Finished or Favorites; search and sort by recency, title or progress.
 - Group comics into automatically discovered folder collections or custom collections. Long-press a cover to favorite it, change its finished status, reset progress, start over or manage collections.

@@ -39,6 +39,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -72,6 +75,9 @@ import dev.tabletcomics.library.progressFraction
 import dev.tabletcomics.reader.ComicReaderSession
 import dev.tabletcomics.reader.PageTurnReader
 import dev.tabletcomics.reader.PageFit
+import dev.tabletcomics.reader.DEFAULT_PAGE_DIMMING
+import dev.tabletcomics.reader.MAX_PAGE_DIMMING
+import dev.tabletcomics.reader.safePageDimming
 import dev.tabletcomics.reader.cleanupInactivePageSourceDirectories
 import dev.tabletcomics.reader.ReaderRestoreState
 import dev.tabletcomics.reader.SeekState
@@ -178,6 +184,8 @@ private fun ComicApp() {
     var lightMode by remember { mutableStateOf(prefs.getBoolean("lightMode", false)) }
     var showReaderProgress by remember { mutableStateOf(prefs.getBoolean("showReaderProgress", false)) }
     var keepScreenAwake by remember { mutableStateOf(prefs.getBoolean("keepScreenAwake", true)) }
+    var pageDimmerEnabled by remember { mutableStateOf(prefs.getBoolean("pageDimmerEnabled", false)) }
+    var pageDimming by remember { mutableFloatStateOf(safePageDimming(prefs.getFloat("pageDimming", DEFAULT_PAGE_DIMMING))) }
     var panSensitivity by remember { mutableFloatStateOf(prefs.getFloat("panSensitivity", 1.5f).coerceIn(.5f, 2.5f)) }
     var momentumStrength by remember { mutableFloatStateOf(prefs.getFloat("momentumStrength", 1f).coerceIn(0f, 2f)) }
     var fitMode by remember(currentBook?.uri) { mutableStateOf(runCatching { PageFit.valueOf(prefs.getString("fit:${currentBook?.uri}", "PAGE")!!) }.getOrDefault(PageFit.PAGE)) }
@@ -392,6 +400,8 @@ private fun ComicApp() {
         lightMode = prefs.getBoolean("lightMode", false)
         showReaderProgress = prefs.getBoolean("showReaderProgress", false)
         keepScreenAwake = prefs.getBoolean("keepScreenAwake", true)
+        pageDimmerEnabled = prefs.getBoolean("pageDimmerEnabled", false)
+        pageDimming = safePageDimming(prefs.getFloat("pageDimming", DEFAULT_PAGE_DIMMING))
         panSensitivity = prefs.getFloat("panSensitivity", 1.5f).coerceIn(.5f, 2.5f)
         momentumStrength = prefs.getFloat("momentumStrength", 1f).coerceIn(0f, 2f)
         coverRevision++
@@ -677,6 +687,7 @@ when (destination) {
                         totalPages = session.totalPages,
                         fitMode = fitMode, cropBorders = cropBorders, keepZoom = keepZoom,
                         panSensitivity = panSensitivity, momentumStrength = momentumStrength,
+                        pageDimming = if (pageDimmerEnabled) pageDimming else 0f,
                         initialZoomScale = prefs.getFloat("zoom:${currentBook.uri}", 1f),
                         onZoomScaleChanged = { prefs.edit().putFloat("zoom:${currentBook.uri}", it).apply() },
                         onTurn = { target -> session.navigate(target.startIndex) },
@@ -769,6 +780,22 @@ when (destination) {
         if (readerOptionsVisible) {
             AlertDialog(onDismissRequest = { readerOptionsVisible = false }, title = { Text("Reading options") },
                 text = { Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState())) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Page dimmer", Modifier.weight(1f))
+                        Switch(pageDimmerEnabled, {
+                            pageDimmerEnabled = it
+                            prefs.edit().putBoolean("pageDimmerEnabled", it).putFloat("pageDimming", pageDimming).apply()
+                        }, modifier = Modifier.semantics { contentDescription = "Page dimmer" })
+                    }
+                    Text("Dimming · ${(pageDimming * 100).roundToInt()}%",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Slider(value = pageDimming, onValueChange = { pageDimming = safePageDimming(it) },
+                        onValueChangeFinished = { prefs.edit().putFloat("pageDimming", pageDimming).apply() },
+                        valueRange = 0f..MAX_PAGE_DIMMING, enabled = pageDimmerEnabled,
+                        modifier = Modifier.semantics {
+                            contentDescription = "Page dimming strength"
+                            stateDescription = "${(pageDimming * 100).roundToInt()}% dimming"
+                        })
                     Text("Page fit", style = MaterialTheme.typography.titleSmall)
                     PageFit.entries.forEach { mode ->
                         TextButton(onClick = {

@@ -83,6 +83,7 @@ fun PageTurnReader(
     keepZoom: Boolean = true,
     panSensitivity: Float = 1.5f,
     momentumStrength: Float = 1f,
+    pageDimming: Float = 0f,
     onDecodeRegions: suspend (FullResolutionPage, List<Rect>, Int) -> List<Bitmap?>,
     modifier: Modifier = Modifier,
 ) {
@@ -419,6 +420,10 @@ fun PageTurnReader(
                     drawViewportUnit(drawnCurrent, geometry, drag, zoomTransform, detailTiles, verticalReading)
                 }
             }
+            // One final pass dims every page layer equally, including detail tiles and folds.
+            // Black margins stay black; controls are drawn outside this Canvas.
+            val dimming = safePageDimming(pageDimming)
+            if (dimming > 0f) drawRect(Color.Black.copy(alpha = dimming))
         }
         if (zoomTransform.scale > 1.01f && showZoomReset) {
             Surface(Modifier.align(Alignment.TopEnd).padding(14.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = .94f),

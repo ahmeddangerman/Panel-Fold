@@ -3,6 +3,7 @@ package dev.tabletcomics.library
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
+import dev.tabletcomics.reader.MAX_PAGE_DIMMING
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 
@@ -48,13 +49,13 @@ object BackupLimits {
 }
 
 internal object BackupSettings {
-    val globalKeys = setOf("accent", "lightMode", "coverWidth", "showReaderProgress", "keepScreenAwake", "panSensitivity", "momentumStrength")
+    val globalKeys = setOf("accent", "lightMode", "coverWidth", "showReaderProgress", "keepScreenAwake", "panSensitivity", "momentumStrength", "pageDimmerEnabled", "pageDimming")
     val comicKeys = setOf("zoom", "fit", "crop", "keepZoom", "coverPage", "rtl", "spreads")
 
     fun validate(key: String, value: Any, comic: Boolean): Any {
         require(key in if (comic) comicKeys else globalKeys) { "Unsupported backup setting: $key" }
         return when (key) {
-            "lightMode", "showReaderProgress", "keepScreenAwake", "crop", "keepZoom", "rtl", "spreads" ->
+            "lightMode", "showReaderProgress", "keepScreenAwake", "pageDimmerEnabled", "crop", "keepZoom", "rtl", "spreads" ->
                 (value as? Boolean) ?: throw IllegalArgumentException("$key must be a boolean")
             "accent" -> (value as? String)?.also { require(it in setOf("violet", "teal", "amber")) { "Unknown accent" } }
                 ?: throw IllegalArgumentException("accent must be a string")
@@ -65,6 +66,7 @@ internal object BackupSettings {
             "zoom" -> finiteFloat(value, 1f, 5f, key)
             "panSensitivity" -> finiteFloat(value, .25f, 4f, key)
             "momentumStrength" -> finiteFloat(value, 0f, 3f, key)
+            "pageDimming" -> finiteFloat(value, 0f, MAX_PAGE_DIMMING, key)
             else -> error("Unreachable setting")
         }
     }

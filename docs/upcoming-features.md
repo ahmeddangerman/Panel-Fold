@@ -20,7 +20,7 @@ An editable checklist for the next improvements. Check items off as they are com
   - Notes:
 - [ ] Support manga series organized into chapter folders, including loose page images, and offer the next chapter when one ends.
   - Notes: Keep chapters separate. The user’s chapter folders may contain loose images, archives, or a mix.
-- [ ] Add night reading without full color inversion. Keep the artwork’s original colors by default; consider optional page dimming and a previewable paper-darkening mode.
-  - Notes:
+- [x] Add a page dimmer for night reading without color inversion.
+  - Notes: Beta 0.6.6 adds an off-by-default switch and a saved 0–80% strength slider in Reading options. Applies to the artwork during zooming and page turns; controls and black margins retain their existing appearance.
 - [ ] Add reading-time statistics per comic and across the library, with daily or weekly history. Pause when the app is backgrounded or the screen is off; store locally.
   - Notes:
