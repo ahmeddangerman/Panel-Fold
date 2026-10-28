@@ -49,6 +49,32 @@ class LibraryBackupInstrumentedTest {
             favorite, true, listOf(PageBookmark(3, 30)), setOf("Restored"), mapOf("zoom" to 2f, "fit" to "WIDTH", "rtl" to true, "spreads" to true))),
             setOf("Restored", "Empty"), mapOf("accent" to "amber", "lightMode" to true)))
 
+    @Test fun deletingCustomCollectionPreservesReadingStateAndRemovesPendingMembership() = runBlocking {
+        repository.importBackup(backup(), prefs)
+        assertTrue(repository.deleteCollection("Restored"))
+        assertFalse("Restored" in repository.customCollections())
+        val pending = LibraryBackupCodec.decode(repository.exportBackup(prefs)).comics.single()
+        assertFalse("Restored" in pending.collections)
+
+        repository.syncScannedComics(listOf(scanned("content://new/book")), prefs)
+        val restored = repository.entries().single()
+        assertEquals(3, restored.pageIndex)
+        assertTrue(restored.favorite)
+        assertTrue(restored.finished)
+        assertTrue(restored.customCollections.isEmpty())
+        assertEquals(listOf(PageBookmark(3, 30)), repository.bookmarks(restored.uri))
+
+        assertTrue(repository.createCollection("My reading list"))
+        repository.setComicInCollection(restored.uri, "My reading list", true)
+        repository.saveProgress(restored.uri, 5, 10)
+        repository.toggleBookmark(restored.uri, 5)
+        assertTrue(repository.deleteCollection("My reading list"))
+        val afterDelete = repository.entries().single()
+        assertTrue(afterDelete.customCollections.isEmpty())
+        assertEquals(5, afterDelete.pageIndex)
+        assertEquals(listOf(3, 5), repository.bookmarks(afterDelete.uri).map { it.pageIndex })
+    }
+
     @Test fun pendingImportSurvivesExportAndRemapsOnNextScan() = runBlocking {
         prefs.edit().putString("folder", "content://chosen/tree").putString("privateKey", "keep").commit()
         val result = repository.importBackup(backup(), prefs)

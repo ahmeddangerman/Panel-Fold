@@ -12,6 +12,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -34,6 +35,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -41,6 +43,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +62,12 @@ data class ReaderUnit(
     val startIndex: Int,
     val pages: List<Pair<Int, Bitmap>>,
     val fullResolutionPages: Map<Int, FullResolutionPage> = emptyMap(),
+)
+
+private data class MagnifierFocus(
+    val touch: Offset,
+    val lensCenter: Offset,
+    val unitStartIndex: Int,
 )
 
 /** Neighbors are captured at gesture start. Progress is committed only after settling. */
@@ -102,6 +112,7 @@ fun PageTurnReader(
         zoomChanged.value(zoomTransform.scale)
     }
     var cropsByBitmap by remember(bookKey) { mutableStateOf<Map<Bitmap, FloatRect>>(emptyMap()) }
+    var magnifierFocus by remember(bookKey) { mutableStateOf<MagnifierFocus?>(null) }
     val latestCrops = rememberUpdatedState(cropsByBitmap)
     val latestFit = rememberUpdatedState(fitMode)
     val latestCropEnabled = rememberUpdatedState(cropBorders)
@@ -203,6 +214,7 @@ fun PageTurnReader(
     }
 
     LaunchedEffect(current.startIndex, bookKey) {
+        magnifierFocus = null
         settleJob?.cancel()
         motionJob?.cancel()
         turnState.acknowledge(current.startIndex)
@@ -221,7 +233,10 @@ fun PageTurnReader(
         turnState.snapshot?.next, turnState.snapshot?.previous).distinctBy { it.startIndex }
     val detailDemands = detailUnits.flatMapIndexed { index, unit ->
         val geometry = geometryFor(unit)
-        val zoom = if (unit.startIndex == displayUnit.startIndex) zoomTransform else
+        val magnified = magnifierFocus?.takeIf { it.unitStartIndex == unit.startIndex }
+        val zoom = if (magnified != null && unit.startIndex == displayUnit.startIndex) {
+            ZoomBounds.magnifierAt(zoomTransform, magnified.touch, magnified.lensCenter, viewport)
+        } else if (unit.startIndex == displayUnit.startIndex) zoomTransform else
             startZoomFor(unit, if (keepZoom) zoomTransform.scale else 1f)
         unit.pages.mapIndexedNotNull { slot, (pageIndex, _) ->
             val source = unit.fullResolutionPages[pageIndex] ?: return@mapIndexedNotNull null
@@ -273,6 +288,8 @@ fun PageTurnReader(
     Box(modifier.fillMaxSize().clipToBounds().onSizeChanged {
         width = it.width.toFloat()
         viewport = Size(it.width.toFloat(), it.height.toFloat())
+    }.semantics {
+        stateDescription = if (magnifierFocus != null) "Magnifier active" else "Press and hold to magnify"
     }.pointerInput(current.startIndex, layoutKey, rightToLeft, verticalReading, bookKey, fitMode, cropBorders) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -283,8 +300,10 @@ fun PageTurnReader(
             tracker.addPosition(down.uptimeMillis, down.position)
             var dragging = false
             var panning = false
+            var magnifying = false
             var dragOrigin = 0f
             var lastPosition = down.position
+            var lastPointerUptime = down.uptimeMillis
             val zoomEdgeSwipe = ZoomEdgeSwipe()
             var cancelled = false
             var forwardBoundaryOffset: Float? = null
@@ -298,11 +317,47 @@ fun PageTurnReader(
             val downPrevious = latestPrevious.value
             val downNext = latestNext.value
             while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val elapsed = (lastPointerUptime - down.uptimeMillis).coerceAtLeast(0L)
+                val remainingLongPress = (viewConfiguration.longPressTimeoutMillis - elapsed).coerceAtLeast(0L)
+                val event = if (!magnifying && !dragging && !panning) {
+                    withTimeoutOrNull(remainingLongPress) { awaitPointerEvent(PointerEventPass.Initial) }
+                } else awaitPointerEvent(PointerEventPass.Initial)
+                if (event == null) {
+                    magnifying = true
+                    val radius = 72f * density
+                    magnifierFocus = MagnifierFocus(
+                        lastPosition,
+                        ZoomBounds.magnifierLensCenter(lastPosition, viewport, radius, 24f * density),
+                        downCurrent.startIndex,
+                    )
+                    continue
+                }
                 val change = event.changes.firstOrNull { it.id == down.id }
                 if (change == null) {
+                    magnifierFocus = null
                     cancelled = true
                     break
+                }
+                lastPointerUptime = change.uptimeMillis
+                if (!magnifying && !dragging && !panning && change.pressed &&
+                    change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis
+                ) {
+                    magnifying = true
+                }
+                if (magnifying) {
+                    if (!change.pressed || event.changes.count { it.pressed } > 1) {
+                        magnifierFocus = null
+                        cancelled = event.changes.count { it.pressed } > 1
+                        break
+                    }
+                    val radius = 72f * density
+                    magnifierFocus = MagnifierFocus(
+                        change.position,
+                        ZoomBounds.magnifierLensCenter(change.position, viewport, radius, 24f * density),
+                        downCurrent.startIndex,
+                    )
+                    change.consume()
+                    continue
                 }
                 if (event.changes.count { it.pressed } > 1 || (change.isConsumed && dragging)) {
                     cancelled = true
@@ -387,6 +442,7 @@ fun PageTurnReader(
                     change.consume()
                 }
             }
+            if (magnifying) magnifierFocus = null
             if (cancelled) settle(0f, cancelled = true)
         }
     }.pointerInput(current.startIndex, layoutKey, bookKey, fitMode, cropBorders) {
@@ -424,6 +480,30 @@ fun PageTurnReader(
             // Black margins stay black; controls are drawn outside this Canvas.
             val dimming = safePageDimming(pageDimming)
             if (dimming > 0f) drawRect(Color.Black.copy(alpha = dimming))
+            val magnifier = magnifierFocus?.takeIf {
+                it.unitStartIndex == drawnCurrent.startIndex && abs(drag) < .1f
+            }
+            if (magnifier != null) {
+                val radius = 72.dp.toPx()
+                val border = 2.dp.toPx()
+                val lens = FloatRect(
+                    magnifier.lensCenter.x - radius,
+                    magnifier.lensCenter.y - radius,
+                    magnifier.lensCenter.x + radius,
+                    magnifier.lensCenter.y + radius,
+                )
+                val lensPath = Path().apply { addOval(lens) }
+                val magnifiedZoom = ZoomBounds.magnifierAt(
+                    zoomTransform, magnifier.touch, magnifier.lensCenter, size,
+                )
+                drawCircle(Color.Black, radius + border * 2f, magnifier.lensCenter)
+                clipPath(lensPath) {
+                    drawViewportUnit(drawnCurrent, geometry, 0f, magnifiedZoom, detailTiles, verticalReading)
+                    if (dimming > 0f) drawRect(Color.Black.copy(alpha = dimming))
+                }
+                drawCircle(Color.White, radius, magnifier.lensCenter, style = Stroke(border))
+                drawCircle(Color.Black, radius - border, magnifier.lensCenter, style = Stroke(border / 2f))
+            }
         }
         if (zoomTransform.scale > 1.01f && showZoomReset) {
             Surface(Modifier.align(Alignment.TopEnd).padding(14.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = .94f),

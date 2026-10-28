@@ -117,6 +117,37 @@ class ZoomBoundsTest {
     }
 
     @Test
+    fun magnifierKeepsTheHeldContentPointAtTheLensCenter() {
+        val viewport = Size(1200f, 800f)
+        val base = ZoomTransform(scale = 2f, pan = Offset(90f, -40f))
+        val touch = Offset(330f, 270f)
+        val lens = Offset(420f, 160f)
+
+        val content = ZoomBounds.contentPointAtScreenPosition(touch, viewport, base)
+        val zoomed = ZoomBounds.magnifierAt(base, touch, lens, viewport)
+        val center = Offset(viewport.width / 2f, viewport.height / 2f)
+        val rendered = center + (content - center) * zoomed.scale + zoomed.pan
+
+        assertEquals(4f, zoomed.scale, 0f)
+        assertEquals(lens.x, rendered.x, .01f)
+        assertEquals(lens.y, rendered.y, .01f)
+    }
+
+    @Test
+    fun magnifierLensIsPlacedBesideFingerAndClampedToViewport() {
+        val viewport = Size(1200f, 800f)
+        val above = ZoomBounds.magnifierLensCenter(Offset(40f, 740f), viewport, 72f, 24f)
+        val below = ZoomBounds.magnifierLensCenter(Offset(1170f, 20f), viewport, 72f, 24f)
+
+        assertEquals(72f, above.x, 0f)
+        assertTrue(above.y < 740f)
+        assertEquals(1128f, below.x, 0f)
+        assertTrue(below.y > 20f)
+        assertTrue(below.x + 72f <= viewport.width)
+        assertTrue(below.y + 72f <= viewport.height)
+    }
+
+    @Test
     fun widthFitZoomCentersTappedPageAndFillsTabletWidth() {
         val viewport = Size(1200f, 800f)
         val spread = listOf(Size(600f, 800f), Size(600f, 800f))

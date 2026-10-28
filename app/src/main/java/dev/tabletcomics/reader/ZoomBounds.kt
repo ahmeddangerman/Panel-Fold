@@ -3,6 +3,7 @@ package dev.tabletcomics.reader
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import kotlin.math.min
 import kotlin.math.sign
 
 private const val MAX_ZOOM_SCALE = 5f
@@ -19,6 +20,44 @@ internal object ZoomBounds {
     }
 
     fun fittedContentRect(viewport: Size, pages: List<Size>): Rect = ReaderGeometry.bounds(ReaderGeometry.layout(viewport, pages))
+
+    fun contentPointAtScreenPosition(screenPosition: Offset, viewport: Size, zoom: ZoomTransform): Offset {
+        if (!zoom.scale.isFinite() || zoom.scale <= 0f) return screenPosition
+        val center = Offset(viewport.width / 2f, viewport.height / 2f)
+        return center + (screenPosition - center - zoom.pan) / zoom.scale
+    }
+
+    /** Keeps the source point under the finger at the lens center while magnifying it. */
+    fun magnifierAt(
+        base: ZoomTransform,
+        touch: Offset,
+        lensCenter: Offset,
+        viewport: Size,
+        magnification: Float = 2f,
+    ): ZoomTransform {
+        val contentPoint = contentPointAtScreenPosition(touch, viewport, base)
+        val scale = (base.scale * if (magnification.isFinite()) magnification.coerceIn(1f, 4f) else 2f)
+            .coerceIn(1f, 20f)
+        val center = Offset(viewport.width / 2f, viewport.height / 2f)
+        val pan = lensCenter - center - (contentPoint - center) * scale
+        return ZoomTransform(scale, pan)
+    }
+
+    /** Put the circular lens beside the held point and clamp its whole body into the viewport. */
+    fun magnifierLensCenter(touch: Offset, viewport: Size, radius: Float, gap: Float): Offset {
+        if (viewport.width <= 0f || viewport.height <= 0f) return Offset.Zero
+        val safeRadius = radius.coerceAtLeast(0f).coerceAtMost(min(viewport.width, viewport.height) / 2f)
+        val safeGap = gap.coerceAtLeast(0f)
+        val x = touch.x.coerceIn(safeRadius, viewport.width - safeRadius)
+        val below = touch.y + safeGap + safeRadius
+        val above = touch.y - safeGap - safeRadius
+        val y = when {
+            below <= viewport.height - safeRadius -> below
+            above >= safeRadius -> above
+            else -> touch.y.coerceIn(safeRadius, viewport.height - safeRadius)
+        }.coerceIn(safeRadius, viewport.height - safeRadius)
+        return Offset(x, y)
+    }
 
     fun fitPageToWidth(viewport: Size, pages: List<Size>, pageIndex: Int): ZoomTransform =
         fitPageToWidth(viewport, ReaderGeometry.layout(viewport, pages), pageIndex, fittedContentRect(viewport, pages))

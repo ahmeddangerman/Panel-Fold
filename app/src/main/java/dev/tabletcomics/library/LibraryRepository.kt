@@ -220,6 +220,30 @@ class LibraryRepository(context: Context) {
         }
     }
 
+    suspend fun deleteCollection(name: String): Boolean = withContext(Dispatchers.IO) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return@withContext false
+        val db = helper.writableDatabase
+        db.beginTransaction()
+        try {
+            val exists = db.rawQuery("SELECT 1 FROM collections WHERE name=?", arrayOf(clean)).use { it.moveToFirst() }
+            if (!exists) return@withContext false
+            db.delete("comic_collections", "collection_name=?", arrayOf(clean))
+            db.delete("collections", "name=?", arrayOf(clean))
+            // Pending backup records can be matched to a future scan. Remove the assignment there
+            // too, or the deleted collection would quietly return when that comic is restored.
+            readPendingBackupComics(db).forEach { pending ->
+                if (clean in pending.collections) {
+                    savePendingBackupComic(db, pending.copy(collections = pending.collections - clean))
+                }
+            }
+            db.setTransactionSuccessful()
+            true
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     suspend fun createCollection(name: String): Boolean = withContext(Dispatchers.IO) {
         val clean = name.trim()
         if (clean.isEmpty()) return@withContext false

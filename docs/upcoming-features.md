@@ -2,18 +2,18 @@
 
 An editable checklist for the next improvements. Check items off as they are completed, and add notes or priorities as plans become clearer.
 
-- [ ] Delete custom collections I made.
-  - Notes: Add a delete action for a user-created collection. Remove only that collection and its memberships; keep the Comics section, comic files, and library entries.
-- [ ] Make reading progress move right-to-left for manga.
-  - Notes: Progress visuals should follow each comic's saved reading direction, including the reader progress line and library progress bars.
+- [x] Delete custom collections I made.
+  - Notes: Removes only the collection and its memberships, preserves comics, progress, bookmarks, and files, and clears that assignment from pending backups.
+- [x] Make reading progress move right-to-left for manga.
+  - Notes: Reader progress line, seek slider, and library progress bars follow each comic's saved reading direction.
 - [ ] Support nested archives, such as CBZ files stored inside ZIP or RAR files.
   - Notes:
 - [ ] Improve automatic collections from folders.
   - Notes:
 - [ ] Rework the UI after studying other reader apps.
   - Notes:
-- [ ] Add a press-and-hold magnifier for inspecting artwork.
-  - Notes: Show a temporary magnified lens around the held area, follow the finger while held, and dismiss it on release.
+- [x] Add a press-and-hold magnifier for inspecting artwork.
+  - Notes: A temporary 2× circular lens follows the held point, uses original-resolution detail tiles, and dismisses on release.
 - [ ] Make white-border trimming work reliably.
   - Notes:
 - [ ] Use one page-turn animation, also triggered from the screen edge.

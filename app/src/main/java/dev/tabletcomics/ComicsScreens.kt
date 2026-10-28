@@ -1,5 +1,6 @@
 package dev.tabletcomics
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,6 +21,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -30,11 +34,35 @@ import dev.tabletcomics.library.LibraryFilter
 import dev.tabletcomics.library.LibrarySort
 import dev.tabletcomics.library.comicStatus
 import dev.tabletcomics.library.progressFraction
+import dev.tabletcomics.library.progressFill
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 enum class AppDestination(val label: String) { HOME("Home"), LIBRARY("Library"), COLLECTIONS("Collections"), SETTINGS("Settings") }
+
+@Composable
+internal fun ReadingProgressBar(
+    progress: Float,
+    rightToLeft: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val fill = progressFill(progress, rightToLeft)
+    val active = MaterialTheme.colorScheme.primary
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    Canvas(modifier.height(4.dp)) {
+        val radius = CornerRadius(size.height / 2f)
+        drawRoundRect(track, cornerRadius = radius)
+        if (fill.widthFraction > 0f) {
+            drawRoundRect(
+                color = active,
+                topLeft = Offset(fill.startFraction * size.width, 0f),
+                size = Size(fill.widthFraction * size.width, size.height),
+                cornerRadius = radius,
+            )
+        }
+    }
+}
 
 @Composable
 internal fun ReadingHome(
@@ -119,8 +147,7 @@ private fun HomeFeatureDetails(book: Book, entry: ComicLibraryEntry?, fraction: 
             maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text(entry?.let { if (it.pageIndex >= 0 && it.pageCount > 0) "Page ${it.pageIndex + 1} of ${it.pageCount} · ${(fraction * 100).roundToInt()}%" else "Ready to read" } ?: "Ready to read",
             Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        LinearProgressIndicator(progress = { fraction }, Modifier.fillMaxWidth(.78f).padding(top = 12.dp), color = MaterialTheme.colorScheme.primary,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant)
+        ReadingProgressBar(fraction, entry?.rightToLeft == true, Modifier.fillMaxWidth(.78f).padding(top = 12.dp))
         Row(Modifier.padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
             Button(onClick = { onResume(book) }, shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 13.dp)) {
                 Text(if ((entry?.pageIndex ?: -1) >= 0) "Resume reading" else "Start reading")
@@ -171,11 +198,19 @@ internal fun ComicLibraryScreen(
 }
 
 @Composable
-internal fun CollectionsExperience(collections: List<LibraryShelfCollection>, diskCache: CoverDiskCache,
-                                   onSelect: (LibraryShelfCollection) -> Unit, onCreate: () -> Unit) {
-    androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize().testTag("collections-list"),
+internal fun CollectionsExperience(
+    collections: List<LibraryShelfCollection>,
+    diskCache: CoverDiskCache,
+    onSelect: (LibraryShelfCollection) -> Unit,
+    onCreate: () -> Unit,
+    onDeleteCollection: (String) -> Unit = {},
+) {
+    var deleteTarget by remember { mutableStateOf<String?>(null) }
+    androidx.compose.foundation.lazy.LazyColumn(
+        Modifier.fillMaxSize().testTag("collections-list"),
         contentPadding = PaddingValues(horizontal = 32.dp, vertical = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         item(key = "header") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -186,22 +221,50 @@ internal fun CollectionsExperience(collections: List<LibraryShelfCollection>, di
             }
             Spacer(Modifier.height(10.dp))
         }
-        if (collections.isEmpty()) item { Text("Collections you create will live here.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (collections.isEmpty()) item {
+            Text("Collections you create will live here.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         items(collections, key = { it.key }) { shelf ->
-            Surface(Modifier.fillMaxWidth().clickable { onSelect(shelf) }, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
+            Surface(
+                Modifier.fillMaxWidth().clickable { onSelect(shelf) },
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (shelf.cover != null) CoverPreview(shelf.cover, diskCache, Modifier.size(62.dp, 84.dp).clip(RoundedCornerShape(10.dp)))
-                    else Surface(Modifier.size(62.dp, 84.dp), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(10.dp)) {
-                        Box(contentAlignment = Alignment.Center) { Text("▤", color = MaterialTheme.colorScheme.primary) }
+                    if (shelf.cover != null) {
+                        CoverPreview(shelf.cover, diskCache, Modifier.size(62.dp, 84.dp).clip(RoundedCornerShape(10.dp)))
+                    } else {
+                        Surface(Modifier.size(62.dp, 84.dp), color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(10.dp)) {
+                            Box(contentAlignment = Alignment.Center) { Text("▤", color = MaterialTheme.colorScheme.primary) }
+                        }
                     }
                     Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
                         Text(shelf.name, style = MaterialTheme.typography.titleLarge)
-                        Text("${shelf.issueCount} ${if (shelf.issueCount == 1) "comic" else "comics"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${shelf.issueCount} ${if (shelf.issueCount == 1) "comic" else "comics"}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (shelf.customName != null) {
+                        TextButton(onClick = { deleteTarget = shelf.customName }) { Text("Delete") }
                     }
                     Text("Open  ›", color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
+    }
+    deleteTarget?.let { name ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete collection?") },
+            text = { Text("Remove \"$name\" and its comic assignments? Your comic files and library entries will stay in place.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteCollection(name)
+                    deleteTarget = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -277,7 +340,7 @@ private fun ShelfReadCard(book: Book, entry: ComicLibraryEntry, cache: CoverDisk
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(book.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                 Text("${entry.pageIndex + 1} / ${entry.pageCount} pages", Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                LinearProgressIndicator(progress = { progress }, Modifier.fillMaxWidth().padding(top = 10.dp))
+                ReadingProgressBar(progress, entry.rightToLeft, Modifier.fillMaxWidth().padding(top = 10.dp))
             }
         }
     }
@@ -298,7 +361,6 @@ private fun PosterCover(book: Book, entry: ComicLibraryEntry, cache: CoverDiskCa
         Text(book.title, Modifier.padding(top = 10.dp), maxLines = 2, minLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
         Text(if (entry.pageIndex >= 0 && entry.pageCount > 0) "${(progress * 100).roundToInt()}% · ${entry.pageIndex + 1}/${entry.pageCount}" else "${book.format.uppercase()} · Not started",
             Modifier.padding(top = 2.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        LinearProgressIndicator(progress = { progress }, Modifier.fillMaxWidth().padding(top = 7.dp), color = MaterialTheme.colorScheme.primary,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant)
+        ReadingProgressBar(progress, entry.rightToLeft, Modifier.fillMaxWidth().padding(top = 7.dp))
     }
 }

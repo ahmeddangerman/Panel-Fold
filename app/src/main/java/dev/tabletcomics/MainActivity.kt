@@ -37,12 +37,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.core.view.WindowCompat
@@ -172,6 +174,7 @@ private fun ComicApp() {
     var licenseDialog by remember { mutableStateOf(false) }
     var seekDraft by remember { mutableFloatStateOf(0f) }
     var rightToLeft by remember { mutableStateOf(false) }
+    var readingDirectionsRevision by remember { mutableIntStateOf(0) }
     var verticalReading by remember { mutableStateOf(false) }
     var spreads by remember { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
@@ -404,6 +407,7 @@ private fun ComicApp() {
         pageDimming = safePageDimming(prefs.getFloat("pageDimming", DEFAULT_PAGE_DIMMING))
         panSensitivity = prefs.getFloat("panSensitivity", 1.5f).coerceIn(.5f, 2.5f)
         momentumStrength = prefs.getFloat("momentumStrength", 1f).coerceIn(0f, 2f)
+        readingDirectionsRevision++
         coverRevision++
     }
     val exportBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -518,11 +522,12 @@ private fun ComicApp() {
 
     val booksByUri = remember(books) { books.associateBy { it.uri.toString() } }
     val persistedByUri = remember(libraryEntries) { libraryEntries.associateBy { it.uri } }
-    val catalogEntries = remember(books, persistedByUri) {
+    val catalogEntries = remember(books, persistedByUri, readingDirectionsRevision) {
         books.map { book ->
-            persistedByUri[book.uri.toString()] ?: ComicLibraryEntry(
-                uri = book.uri.toString(), title = book.title, format = book.format, folderPath = book.folderPath,
-            )
+            val uri = book.uri.toString()
+            (persistedByUri[uri] ?: ComicLibraryEntry(
+                uri = uri, title = book.title, format = book.format, folderPath = book.folderPath,
+            )).copy(rightToLeft = prefs.getBoolean("rtl:$uri", false))
         }
     }
     val folderPaths = remember(books) {
@@ -590,6 +595,15 @@ private fun ComicApp() {
     var createCollectionVisible by remember { mutableStateOf(false) }
 
     fun clearCollectionScope() { selectedFolderPath = null; selectedCustomCollection = null }
+    fun deleteCustomCollection(name: String) {
+        scope.launch {
+            if (repository.deleteCollection(name)) {
+                customCollections = repository.customCollections()
+                libraryEntries = repository.entries()
+                if (selectedCustomCollection == name) selectedCustomCollection = null
+            }
+        }
+    }
     fun navigateTo(target: AppDestination) {
         if (target == AppDestination.LIBRARY) clearCollectionScope()
         destination = target
@@ -647,7 +661,7 @@ when (destination) {
                                     coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it }, scopeLabel, ::clearCollectionScope, libraryMessage)
                                 AppDestination.COLLECTIONS -> CollectionsExperience(collectionShelves, diskCoverCache, { shelf ->
                                     selectedFolderPath = shelf.folderPath; selectedCustomCollection = shelf.customName; destination = AppDestination.LIBRARY
-                                }, { createCollectionVisible = true })
+                                }, { createCollectionVisible = true }, ::deleteCustomCollection)
                                 AppDestination.SETTINGS -> AppSettings()
                             }
                         }
@@ -664,7 +678,7 @@ when (destination) {
                                 coverWidth, { coverWidth = it; prefs.edit().putInt("coverWidth", it).apply() }, { startReading(it) }, { detailBook = it }, scopeLabel, ::clearCollectionScope, libraryMessage)
                             AppDestination.COLLECTIONS -> CollectionsExperience(collectionShelves, diskCoverCache, { shelf ->
                                 selectedFolderPath = shelf.folderPath; selectedCustomCollection = shelf.customName; destination = AppDestination.LIBRARY
-                            }, { createCollectionVisible = true })
+                            }, { createCollectionVisible = true }, ::deleteCustomCollection)
                             AppDestination.SETTINGS -> AppSettings()
                         }
                         }
@@ -702,11 +716,8 @@ when (destination) {
                 }
                 if (showReaderProgress && !controlsVisible && session.totalPages > 0) {
                     val page = (session.requestedPageIndex ?: session.current?.startIndex ?: 0).coerceIn(0, session.totalPages - 1)
-                    Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(3.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant)) {
-                        Box(Modifier.fillMaxWidth((page + 1f) / session.totalPages).fillMaxHeight()
-                            .background(MaterialTheme.colorScheme.primary))
-                    }
+                    ReadingProgressBar((page + 1f) / session.totalPages, rightToLeft && !verticalReading,
+                        Modifier.align(Alignment.BottomCenter).fillMaxWidth())
                 }
                 session.error?.let { message ->
                     Surface(Modifier.align(Alignment.Center).padding(24.dp), color = MaterialTheme.colorScheme.errorContainer,
@@ -760,11 +771,15 @@ when (destination) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                                 val leadingForward = !verticalReading && rightToLeft
                                 IconButton(onClick = { turn(leadingForward) }, enabled = if (leadingForward) session.next != null else session.previous != null) { Text(if (verticalReading) "↓" else "‹", style = MaterialTheme.typography.headlineSmall) }
-                                if (session.totalPages > 1) Slider(value = seekDraft.coerceIn(0f, (session.totalPages - 1).toFloat()),
-                                    onValueChange = { seekDraft = it }, onValueChangeFinished = {
-                                        val target = SeekState(draftIndex = seekDraft.roundToInt()).destination(session.totalPages, spreadMode)
-                                        seekDraft = target.toFloat(); session.navigate(target)
-                                    }, valueRange = 0f..(session.totalPages - 1).toFloat(), modifier = Modifier.weight(1f))
+                                if (session.totalPages > 1) CompositionLocalProvider(
+                                    LocalLayoutDirection provides if (rightToLeft && !verticalReading) LayoutDirection.Rtl else LayoutDirection.Ltr,
+                                ) {
+                                    Slider(value = seekDraft.coerceIn(0f, (session.totalPages - 1).toFloat()),
+                                        onValueChange = { seekDraft = it }, onValueChangeFinished = {
+                                            val target = SeekState(draftIndex = seekDraft.roundToInt()).destination(session.totalPages, spreadMode)
+                                            seekDraft = target.toFloat(); session.navigate(target)
+                                        }, valueRange = 0f..(session.totalPages - 1).toFloat(), modifier = Modifier.weight(1f))
+                                }
                                 val shownPage = session.requestedPageIndex ?: session.current!!.startIndex
                                 Text("${shownPage + 1}/${session.totalPages}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
                                 val trailingForward = verticalReading || !rightToLeft
@@ -823,14 +838,18 @@ when (destination) {
                             verticalReading = index == 2
                             currentBook?.let { book -> prefs.edit()
                                 .putBoolean("rtl:${book.uri}", rightToLeft)
-                                .putBoolean("vertical:${book.uri}", verticalReading).apply() }
+                                .putBoolean("vertical:${book.uri}", verticalReading).apply()
+                            readingDirectionsRevision++
+                        }
                         }, verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(selected = selected, onClick = {
                                 rightToLeft = index == 1
                                 verticalReading = index == 2
                                 currentBook?.let { book -> prefs.edit()
                                     .putBoolean("rtl:${book.uri}", rightToLeft)
-                                    .putBoolean("vertical:${book.uri}", verticalReading).apply() }
+                                    .putBoolean("vertical:${book.uri}", verticalReading).apply()
+                                    readingDirectionsRevision++
+                                }
                             })
                             Text(label)
                         }
