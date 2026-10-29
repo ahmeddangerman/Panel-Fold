@@ -37,15 +37,15 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -522,12 +522,12 @@ private fun ComicApp() {
 
     val booksByUri = remember(books) { books.associateBy { it.uri.toString() } }
     val persistedByUri = remember(libraryEntries) { libraryEntries.associateBy { it.uri } }
-    val catalogEntries = remember(books, persistedByUri, readingDirectionsRevision) {
+    val catalogEntries = remember(books, persistedByUri, rightToLeft, readingDirectionsRevision) {
         books.map { book ->
-            val uri = book.uri.toString()
-            (persistedByUri[uri] ?: ComicLibraryEntry(
-                uri = uri, title = book.title, format = book.format, folderPath = book.folderPath,
-            )).copy(rightToLeft = prefs.getBoolean("rtl:$uri", false))
+            val entry = persistedByUri[book.uri.toString()] ?: ComicLibraryEntry(
+                uri = book.uri.toString(), title = book.title, format = book.format, folderPath = book.folderPath,
+            )
+            entry.copy(rightToLeft = prefs.getBoolean("rtl:${book.uri}", entry.rightToLeft))
         }
     }
     val folderPaths = remember(books) {
@@ -600,7 +600,8 @@ private fun ComicApp() {
             if (repository.deleteCollection(name)) {
                 customCollections = repository.customCollections()
                 libraryEntries = repository.entries()
-                if (selectedCustomCollection == name) selectedCustomCollection = null
+                if (selectedCustomCollection == name) clearCollectionScope()
+                libraryMessage = "Deleted ‘$name’. Your comics remain in the library."
             }
         }
     }
@@ -716,8 +717,8 @@ when (destination) {
                 }
                 if (showReaderProgress && !controlsVisible && session.totalPages > 0) {
                     val page = (session.requestedPageIndex ?: session.current?.startIndex ?: 0).coerceIn(0, session.totalPages - 1)
-                    ReadingProgressBar((page + 1f) / session.totalPages, rightToLeft && !verticalReading,
-                        Modifier.align(Alignment.BottomCenter).fillMaxWidth())
+                    ReadingProgressBar((page + 1f) / session.totalPages, rightToLeft,
+                        Modifier.align(Alignment.BottomStart).fillMaxWidth(), height = 3.dp)
                 }
                 session.error?.let { message ->
                     Surface(Modifier.align(Alignment.Center).padding(24.dp), color = MaterialTheme.colorScheme.errorContainer,
@@ -838,18 +839,14 @@ when (destination) {
                             verticalReading = index == 2
                             currentBook?.let { book -> prefs.edit()
                                 .putBoolean("rtl:${book.uri}", rightToLeft)
-                                .putBoolean("vertical:${book.uri}", verticalReading).apply()
-                            readingDirectionsRevision++
-                        }
+                                .putBoolean("vertical:${book.uri}", verticalReading).apply() }
                         }, verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(selected = selected, onClick = {
                                 rightToLeft = index == 1
                                 verticalReading = index == 2
                                 currentBook?.let { book -> prefs.edit()
                                     .putBoolean("rtl:${book.uri}", rightToLeft)
-                                    .putBoolean("vertical:${book.uri}", verticalReading).apply()
-                                    readingDirectionsRevision++
-                                }
+                                    .putBoolean("vertical:${book.uri}", verticalReading).apply() }
                             })
                             Text(label)
                         }
@@ -1223,10 +1220,8 @@ private fun ComicCoverCard(
                 Modifier.padding(top = 3.dp), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Box(Modifier.fillMaxWidth().padding(top = 9.dp).height(4.dp).background(Color(0xFF2B3040), RoundedCornerShape(4.dp))) {
-                if (entry.pageIndex >= 0 && entry.pageCount > 0)
-                    Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp)))
-            }
+            ReadingProgressBar(fraction, entry.rightToLeft, Modifier.fillMaxWidth().padding(top = 9.dp),
+                trackColor = Color(0xFF2B3040))
         }
     }
 }
@@ -1242,9 +1237,8 @@ private fun ContinueReadingCard(book: Book, entry: ComicLibraryEntry, diskCache:
                 Text(book.title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                 Text("Page ${entry.pageIndex + 1} of ${entry.pageCount}", style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 7.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Box(Modifier.fillMaxWidth().padding(top = 10.dp).height(4.dp).background(Color(0xFF2B3040), RoundedCornerShape(4.dp))) {
-                    Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp)))
-                }
+                ReadingProgressBar(fraction, entry.rightToLeft, Modifier.fillMaxWidth().padding(top = 10.dp),
+                    trackColor = Color(0xFF2B3040))
                 Text("RESUME READING  ›", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(top = 10.dp))
             }

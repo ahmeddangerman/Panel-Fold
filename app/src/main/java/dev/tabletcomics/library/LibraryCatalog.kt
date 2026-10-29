@@ -15,6 +15,13 @@ data class ComicLibraryEntry(
     val rightToLeft: Boolean = false,
 )
 
+internal data class ProgressFill(val startFraction: Float, val widthFraction: Float)
+
+internal fun progressFill(progress: Float, rightToLeft: Boolean): ProgressFill {
+    val safeProgress = if (progress.isFinite()) progress.coerceIn(0f, 1f) else 0f
+    return ProgressFill(if (rightToLeft) 1f - safeProgress else 0f, safeProgress)
+}
+
 enum class LibraryFilter(val label: String) {
     ALL("All"), READING("Reading"), UNREAD("Unread"), FINISHED("Finished"), FAVORITES("Favorites")
 }
@@ -34,14 +41,6 @@ fun comicStatus(entry: ComicLibraryEntry): ComicStatus = when {
 fun progressFraction(entry: ComicLibraryEntry): Float =
     if (entry.pageCount <= 0 || entry.pageIndex < 0) Float.NaN
     else ((entry.pageIndex + 1).toFloat() / entry.pageCount).coerceIn(0f, 1f)
-
-internal data class ProgressFill(val startFraction: Float, val widthFraction: Float)
-
-/** Positions progress at the reading origin: left for LTR, right for manga RTL. */
-internal fun progressFill(progress: Float, rightToLeft: Boolean): ProgressFill {
-    val width = if (progress.isFinite()) progress.coerceIn(0f, 1f) else 0f
-    return ProgressFill(if (rightToLeft) 1f - width else 0f, width)
-}
 
 fun filterAndSortLibrary(
     entries: List<ComicLibraryEntry>,

@@ -220,35 +220,28 @@ class LibraryRepository(context: Context) {
         }
     }
 
-    suspend fun deleteCollection(name: String): Boolean = withContext(Dispatchers.IO) {
-        val clean = name.trim()
-        if (clean.isEmpty()) return@withContext false
-        val db = helper.writableDatabase
-        db.beginTransaction()
-        try {
-            val exists = db.rawQuery("SELECT 1 FROM collections WHERE name=?", arrayOf(clean)).use { it.moveToFirst() }
-            if (!exists) return@withContext false
-            db.delete("comic_collections", "collection_name=?", arrayOf(clean))
-            db.delete("collections", "name=?", arrayOf(clean))
-            // Pending backup records can be matched to a future scan. Remove the assignment there
-            // too, or the deleted collection would quietly return when that comic is restored.
-            readPendingBackupComics(db).forEach { pending ->
-                if (clean in pending.collections) {
-                    savePendingBackupComic(db, pending.copy(collections = pending.collections - clean))
-                }
-            }
-            db.setTransactionSuccessful()
-            true
-        } finally {
-            db.endTransaction()
-        }
-    }
-
     suspend fun createCollection(name: String): Boolean = withContext(Dispatchers.IO) {
         val clean = name.trim()
         if (clean.isEmpty()) return@withContext false
         val values = android.content.ContentValues().apply { put("name", clean) }
         helper.writableDatabase.insertWithOnConflict("collections", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    /** Removes only the custom collection and its assignments; comic records remain untouched. */
+    suspend fun deleteCollection(name: String): Boolean = withContext(Dispatchers.IO) {
+        val db = helper.writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("comic_collections", "collection_name=?", arrayOf(name))
+            val deleted = db.delete("collections", "name=?", arrayOf(name)) > 0
+            readPendingBackupComics(db).filter { name in it.collections }.forEach { comic ->
+                savePendingBackupComic(db, comic.copy(collections = comic.collections - name))
+            }
+            db.setTransactionSuccessful()
+            deleted
+        } finally {
+            db.endTransaction()
+        }
     }
 
     suspend fun setComicInCollection(uri: String, name: String, included: Boolean) = withContext(Dispatchers.IO) {

@@ -3,9 +3,9 @@
 An editable checklist for the next improvements. Check items off as they are completed, and add notes or priorities as plans become clearer.
 
 - [x] Delete custom collections I made.
-  - Notes: Removes only the collection and its memberships, preserves comics, progress, bookmarks, and files, and clears that assignment from pending backups.
+  - Notes: Beta 0.6.7 adds a confirmation action in Collections. It deletes only the custom grouping and its assignments, including pending backup assignments; comic files, library entries, progress, and the Collections section stay.
 - [x] Make reading progress move right-to-left for manga.
-  - Notes: Reader progress line, seek slider, and library progress bars follow each comic's saved reading direction.
+  - Notes: Beta 0.6.7 follows each comic's saved RTL setting on the reader progress line, page slider, and library/Home progress bars.
 - [ ] Support nested archives, such as CBZ files stored inside ZIP or RAR files.
   - Notes:
 - [ ] Improve automatic collections from folders.
@@ -13,7 +13,7 @@ An editable checklist for the next improvements. Check items off as they are com
 - [ ] Rework the UI after studying other reader apps.
   - Notes:
 - [x] Add a press-and-hold magnifier for inspecting artwork.
-  - Notes: A temporary 2× circular lens follows the held point, uses original-resolution detail tiles, and dismisses on release.
+  - Notes: Beta 0.6.7 shows a temporary 2× circular lens, moves it with the held finger, uses the original image detail tiles, and hides it on release.
 - [ ] Make white-border trimming work reliably.
   - Notes:
 - [ ] Use one page-turn animation, also triggered from the screen edge.

@@ -60,11 +60,11 @@ class LibraryCatalogTest {
         assertTrue(progressFraction(entry("Unknown", page = 4, pages = 0)).isNaN())
     }
 
-    @Test fun progressOriginFollowsTheComicReadingDirection() {
-        assertEquals(ProgressFill(0f, 0.42f), progressFill(0.42f, rightToLeft = false))
-        assertEquals(ProgressFill(0.58f, 0.42f), progressFill(0.42f, rightToLeft = true))
+    @Test fun progressFillStartsAtTheReadingDirectionEdge() {
+        assertEquals(ProgressFill(0f, .3f), progressFill(.3f, rightToLeft = false))
+        assertEquals(ProgressFill(.7f, .3f), progressFill(.3f, rightToLeft = true))
         assertEquals(ProgressFill(0f, 0f), progressFill(Float.NaN, rightToLeft = false))
-        assertEquals(ProgressFill(0f, 1f), progressFill(2f, rightToLeft = true))
+        assertEquals(ProgressFill(0f, 1f), progressFill(2f, rightToLeft = false))
     }
 
     @Test fun sortByRecentReadAndProgressPlacesMostRecentOrFurthestFirst() {

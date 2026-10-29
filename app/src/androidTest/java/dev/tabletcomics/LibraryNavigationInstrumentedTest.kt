@@ -5,6 +5,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +34,23 @@ class LibraryNavigationInstrumentedTest {
         compose.onNodeWithTag("collections-list").performScrollToNode(hasText("Shelf 30"))
         compose.onNodeWithText("Shelf 30").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals("Shelf 30", selected) }
+    }
+
+    @Test fun customCollectionDeletionRequiresConfirmationAndPreservesTheLibrarySection() {
+        val custom = LibraryShelfCollection("custom:One Piece", "One Piece", 12, null, customName = "One Piece")
+        val automatic = LibraryShelfCollection("folder:Manga", "Manga", 12, null, folderPath = "Manga")
+        var deleted: String? = null
+        compose.setContent { ComicsTheme("violet") {
+            CollectionsExperience(listOf(custom, automatic), cache, {}, {}, { deleted = it })
+        } }
+
+        compose.onNodeWithContentDescription("Delete collection One Piece").performClick()
+        compose.onNodeWithText("Delete collection?").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Confirm delete collection One Piece").performClick()
+
+        compose.runOnIdle { assertEquals("One Piece", deleted) }
+        compose.onNodeWithText("Collections").assertIsDisplayed()
+        compose.onNodeWithText("Manga").assertIsDisplayed()
     }
 
     @Test fun collectionScopeHasAnExplicitEscapeEvenWhenEmpty() {

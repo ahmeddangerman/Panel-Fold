@@ -117,37 +117,6 @@ class ZoomBoundsTest {
     }
 
     @Test
-    fun magnifierKeepsTheHeldContentPointAtTheLensCenter() {
-        val viewport = Size(1200f, 800f)
-        val base = ZoomTransform(scale = 2f, pan = Offset(90f, -40f))
-        val touch = Offset(330f, 270f)
-        val lens = Offset(420f, 160f)
-
-        val content = ZoomBounds.contentPointAtScreenPosition(touch, viewport, base)
-        val zoomed = ZoomBounds.magnifierAt(base, touch, lens, viewport)
-        val center = Offset(viewport.width / 2f, viewport.height / 2f)
-        val rendered = center + (content - center) * zoomed.scale + zoomed.pan
-
-        assertEquals(4f, zoomed.scale, 0f)
-        assertEquals(lens.x, rendered.x, .01f)
-        assertEquals(lens.y, rendered.y, .01f)
-    }
-
-    @Test
-    fun magnifierLensIsPlacedBesideFingerAndClampedToViewport() {
-        val viewport = Size(1200f, 800f)
-        val above = ZoomBounds.magnifierLensCenter(Offset(40f, 740f), viewport, 72f, 24f)
-        val below = ZoomBounds.magnifierLensCenter(Offset(1170f, 20f), viewport, 72f, 24f)
-
-        assertEquals(72f, above.x, 0f)
-        assertTrue(above.y < 740f)
-        assertEquals(1128f, below.x, 0f)
-        assertTrue(below.y > 20f)
-        assertTrue(below.x + 72f <= viewport.width)
-        assertTrue(below.y + 72f <= viewport.height)
-    }
-
-    @Test
     fun widthFitZoomCentersTappedPageAndFillsTabletWidth() {
         val viewport = Size(1200f, 800f)
         val spread = listOf(Size(600f, 800f), Size(600f, 800f))
@@ -159,6 +128,34 @@ class ZoomBoundsTest {
         assertEquals(Offset(600f, 0f), leftPage.pan)
         assertEquals(2f, rightPage.scale, 0f)
         assertEquals(Offset(-600f, 0f), rightPage.pan)
+    }
+
+    @Test
+    fun magnifierPlacesTheTouchedArtworkAtTheLensCenter() {
+        val viewport = Size(1000f, 800f)
+        val base = ZoomTransform(2f, Offset(100f, -50f))
+        val touch = Offset(700f, 500f)
+        val lensCenter = Offset(620f, 250f)
+        val magnified = ZoomBounds.magnifierAt(base, touch, lensCenter, viewport)
+
+        val viewportCenter = Offset(viewport.width / 2f, viewport.height / 2f)
+        val artworkPoint = viewportCenter + (touch - viewportCenter - base.pan) / base.scale
+        val renderedPoint = viewportCenter + (artworkPoint - viewportCenter) * magnified.scale + magnified.pan
+        assertEquals(4f, magnified.scale, 0f)
+        assertEquals(lensCenter.x, renderedPoint.x, .01f)
+        assertEquals(lensCenter.y, renderedPoint.y, .01f)
+    }
+
+    @Test
+    fun magnifierLensStaysInsideTheViewportAndMovesToTheClearSideOfTheFinger() {
+        val viewport = Size(1000f, 800f)
+        val above = magnifierLensGeometry(Offset(5f, 700f), viewport, 100f, 20f)
+        val below = magnifierLensGeometry(Offset(990f, 80f), viewport, 100f, 20f)
+
+        assertEquals(Offset(100f, 580f), above.center)
+        assertEquals(Offset(900f, 200f), below.center)
+        assertEquals(100f, above.radius, 0f)
+        assertEquals(100f, below.radius, 0f)
     }
 
     @Test

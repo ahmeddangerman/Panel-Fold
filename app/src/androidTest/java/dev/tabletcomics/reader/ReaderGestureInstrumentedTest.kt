@@ -8,7 +8,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
@@ -90,5 +93,28 @@ class ReaderGestureInstrumentedTest {
         compose.runOnIdle { assertEquals(1, turns); assertEquals(1, current.value.startIndex) }
         val image = compose.onNodeWithTag("reader").captureToImage().toPixelMap()
         assertEquals(android.graphics.Color.BLUE, image[image.width / 2, image.height / 2].toArgb())
+    }
+
+    @Test fun pressAndHoldShowsTheMagnifierUntilTheFingerLifts() {
+        val current = page(0, android.graphics.Color.RED)
+        compose.setContent { ComicsTheme("violet") {
+            PageTurnReader(current, null, null, 1, false, "single", "magnifier-test", onTurn = {},
+                onToggleControls = {}, onEndReached = {}, onDecodeRegions = { _, regions, _ -> regions.map { null } },
+                modifier = Modifier.fillMaxSize().testTag("reader"))
+        } }
+
+        compose.onNodeWithTag("reader").performTouchInput { down(center) }
+        compose.mainClock.advanceTimeBy(700L)
+        compose.onNodeWithTag("reader").assert(SemanticsMatcher.expectValue(
+            SemanticsProperties.StateDescription, "Magnifier active",
+        ))
+        compose.onNodeWithTag("reader").performTouchInput { moveTo(Offset(width * .6f, height * .4f)) }
+        compose.onNodeWithTag("reader").assert(SemanticsMatcher.expectValue(
+            SemanticsProperties.StateDescription, "Magnifier active",
+        ))
+        compose.onNodeWithTag("reader").performTouchInput { up() }
+        compose.onNodeWithTag("reader").assert(SemanticsMatcher.expectValue(
+            SemanticsProperties.StateDescription, "Magnifier hidden",
+        ))
     }
 }

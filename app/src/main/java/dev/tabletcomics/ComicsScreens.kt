@@ -1,7 +1,7 @@
 package dev.tabletcomics
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -19,12 +19,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -33,8 +37,8 @@ import dev.tabletcomics.library.CoverDiskCache
 import dev.tabletcomics.library.LibraryFilter
 import dev.tabletcomics.library.LibrarySort
 import dev.tabletcomics.library.comicStatus
-import dev.tabletcomics.library.progressFraction
 import dev.tabletcomics.library.progressFill
+import dev.tabletcomics.library.progressFraction
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -46,20 +50,21 @@ internal fun ReadingProgressBar(
     progress: Float,
     rightToLeft: Boolean,
     modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.primary,
+    trackColor: Color = MaterialTheme.colorScheme.surfaceVariant,
+    height: androidx.compose.ui.unit.Dp = 4.dp,
 ) {
     val fill = progressFill(progress, rightToLeft)
-    val active = MaterialTheme.colorScheme.primary
-    val track = MaterialTheme.colorScheme.surfaceVariant
-    Canvas(modifier.height(4.dp)) {
+    Canvas(modifier.height(height).semantics {
+        progressBarRangeInfo = ProgressBarRangeInfo(fill.widthFraction, 0f..1f)
+    }) {
         val radius = CornerRadius(size.height / 2f)
-        drawRoundRect(track, cornerRadius = radius)
+        drawRoundRect(trackColor, cornerRadius = radius)
         if (fill.widthFraction > 0f) {
-            drawRoundRect(
-                color = active,
-                topLeft = Offset(fill.startFraction * size.width, 0f),
-                size = Size(fill.widthFraction * size.width, size.height),
-                cornerRadius = radius,
-            )
+            drawRoundRect(color,
+                topLeft = Offset(size.width * fill.startFraction, 0f),
+                size = Size(size.width * fill.widthFraction, size.height),
+                cornerRadius = radius)
         }
     }
 }
@@ -147,7 +152,8 @@ private fun HomeFeatureDetails(book: Book, entry: ComicLibraryEntry?, fraction: 
             maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text(entry?.let { if (it.pageIndex >= 0 && it.pageCount > 0) "Page ${it.pageIndex + 1} of ${it.pageCount} · ${(fraction * 100).roundToInt()}%" else "Ready to read" } ?: "Ready to read",
             Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        ReadingProgressBar(fraction, entry?.rightToLeft == true, Modifier.fillMaxWidth(.78f).padding(top = 12.dp))
+        ReadingProgressBar(fraction, entry?.rightToLeft == true,
+            Modifier.fillMaxWidth(.78f).padding(top = 12.dp))
         Row(Modifier.padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
             Button(onClick = { onResume(book) }, shape = RoundedCornerShape(16.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 13.dp)) {
                 Text(if ((entry?.pageIndex ?: -1) >= 0) "Resume reading" else "Start reading")
@@ -198,19 +204,13 @@ internal fun ComicLibraryScreen(
 }
 
 @Composable
-internal fun CollectionsExperience(
-    collections: List<LibraryShelfCollection>,
-    diskCache: CoverDiskCache,
-    onSelect: (LibraryShelfCollection) -> Unit,
-    onCreate: () -> Unit,
-    onDeleteCollection: (String) -> Unit = {},
-) {
-    var deleteTarget by remember { mutableStateOf<String?>(null) }
-    androidx.compose.foundation.lazy.LazyColumn(
-        Modifier.fillMaxSize().testTag("collections-list"),
+internal fun CollectionsExperience(collections: List<LibraryShelfCollection>, diskCache: CoverDiskCache,
+                                   onSelect: (LibraryShelfCollection) -> Unit, onCreate: () -> Unit,
+                                   onDeleteCollection: (String) -> Unit = {}) {
+    var pendingDelete by remember { mutableStateOf<String?>(null) }
+    androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize().testTag("collections-list"),
         contentPadding = PaddingValues(horizontal = 32.dp, vertical = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item(key = "header") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -221,49 +221,42 @@ internal fun CollectionsExperience(
             }
             Spacer(Modifier.height(10.dp))
         }
-        if (collections.isEmpty()) item {
-            Text("Collections you create will live here.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        if (collections.isEmpty()) item { Text("Collections you create will live here.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         items(collections, key = { it.key }) { shelf ->
-            Surface(
-                Modifier.fillMaxWidth().clickable { onSelect(shelf) },
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surface,
-            ) {
+            Surface(Modifier.fillMaxWidth().clickable { onSelect(shelf) }, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (shelf.cover != null) {
-                        CoverPreview(shelf.cover, diskCache, Modifier.size(62.dp, 84.dp).clip(RoundedCornerShape(10.dp)))
-                    } else {
-                        Surface(Modifier.size(62.dp, 84.dp), color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(10.dp)) {
-                            Box(contentAlignment = Alignment.Center) { Text("▤", color = MaterialTheme.colorScheme.primary) }
-                        }
+                    if (shelf.cover != null) CoverPreview(shelf.cover, diskCache, Modifier.size(62.dp, 84.dp).clip(RoundedCornerShape(10.dp)))
+                    else Surface(Modifier.size(62.dp, 84.dp), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(10.dp)) {
+                        Box(contentAlignment = Alignment.Center) { Text("▤", color = MaterialTheme.colorScheme.primary) }
                     }
                     Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
                         Text(shelf.name, style = MaterialTheme.typography.titleLarge)
-                        Text("${shelf.issueCount} ${if (shelf.issueCount == 1) "comic" else "comics"}",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${shelf.issueCount} ${if (shelf.issueCount == 1) "comic" else "comics"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (shelf.customName != null) {
-                        TextButton(onClick = { deleteTarget = shelf.customName }) { Text("Delete") }
-                    }
-                    Text("Open  ›", color = MaterialTheme.colorScheme.primary)
+                        TextButton(onClick = { pendingDelete = shelf.customName }, modifier = Modifier.semantics {
+                            contentDescription = "Delete collection ${shelf.customName}"
+                        }) {
+                            Text("Delete", color = MaterialTheme.colorScheme.error)
+                        }
+                    } else Text("Open  ›", color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
     }
-    deleteTarget?.let { name ->
+    pendingDelete?.let { name ->
         AlertDialog(
-            onDismissRequest = { deleteTarget = null },
+            onDismissRequest = { pendingDelete = null },
             title = { Text("Delete collection?") },
-            text = { Text("Remove \"$name\" and its comic assignments? Your comic files and library entries will stay in place.") },
+            text = { Text("Delete ‘$name’ and remove its comic assignments? Your comics and files will stay in the library.") },
             confirmButton = {
-                TextButton(onClick = {
-                    onDeleteCollection(name)
-                    deleteTarget = null
-                }) { Text("Delete") }
+                TextButton(onClick = { pendingDelete = null; onDeleteCollection(name) }, modifier = Modifier.semantics {
+                    contentDescription = "Confirm delete collection $name"
+                }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
             },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
         )
     }
 }

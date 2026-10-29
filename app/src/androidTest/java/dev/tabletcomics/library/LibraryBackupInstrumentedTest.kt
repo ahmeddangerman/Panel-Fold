@@ -49,32 +49,6 @@ class LibraryBackupInstrumentedTest {
             favorite, true, listOf(PageBookmark(3, 30)), setOf("Restored"), mapOf("zoom" to 2f, "fit" to "WIDTH", "rtl" to true, "spreads" to true))),
             setOf("Restored", "Empty"), mapOf("accent" to "amber", "lightMode" to true)))
 
-    @Test fun deletingCustomCollectionPreservesReadingStateAndRemovesPendingMembership() = runBlocking {
-        repository.importBackup(backup(), prefs)
-        assertTrue(repository.deleteCollection("Restored"))
-        assertFalse("Restored" in repository.customCollections())
-        val pending = LibraryBackupCodec.decode(repository.exportBackup(prefs)).comics.single()
-        assertFalse("Restored" in pending.collections)
-
-        repository.syncScannedComics(listOf(scanned("content://new/book")), prefs)
-        val restored = repository.entries().single()
-        assertEquals(3, restored.pageIndex)
-        assertTrue(restored.favorite)
-        assertTrue(restored.finished)
-        assertTrue(restored.customCollections.isEmpty())
-        assertEquals(listOf(PageBookmark(3, 30)), repository.bookmarks(restored.uri))
-
-        assertTrue(repository.createCollection("My reading list"))
-        repository.setComicInCollection(restored.uri, "My reading list", true)
-        repository.saveProgress(restored.uri, 5, 10)
-        repository.toggleBookmark(restored.uri, 5)
-        assertTrue(repository.deleteCollection("My reading list"))
-        val afterDelete = repository.entries().single()
-        assertTrue(afterDelete.customCollections.isEmpty())
-        assertEquals(5, afterDelete.pageIndex)
-        assertEquals(listOf(3, 5), repository.bookmarks(afterDelete.uri).map { it.pageIndex })
-    }
-
     @Test fun pendingImportSurvivesExportAndRemapsOnNextScan() = runBlocking {
         prefs.edit().putString("folder", "content://chosen/tree").putString("privateKey", "keep").commit()
         val result = repository.importBackup(backup(), prefs)
@@ -153,6 +127,40 @@ class LibraryBackupInstrumentedTest {
         assertEquals(1, result.pendingComics)
         assertTrue(repository.entries().all { !it.favorite && it.pageIndex == -1 })
         assertFalse(prefs.contains("zoom:content://new/a"))
+    }
+
+    @Test fun deletingACollectionKeepsComicsAndOtherCollectionMemberships() = runBlocking {
+        repository.syncScannedComics(listOf(scanned("content://first/book"), scanned("content://second/book", "Second")), prefs)
+        repository.createCollection("Remove me")
+        repository.createCollection("Keep me")
+        repository.setComicInCollection("content://first/book", "Remove me", true)
+        repository.setComicInCollection("content://first/book", "Keep me", true)
+        repository.setComicInCollection("content://second/book", "Remove me", true)
+        repository.saveProgress("content://first/book", 4, 20)
+        repository.toggleBookmark("content://first/book", 4)
+
+        assertTrue(repository.deleteCollection("Remove me"))
+
+        assertEquals(listOf("Keep me"), repository.customCollections())
+        val first = repository.entries().first { it.uri == "content://first/book" }
+        val second = repository.entries().first { it.uri == "content://second/book" }
+        assertEquals(setOf("Keep me"), first.customCollections)
+        assertTrue(second.customCollections.isEmpty())
+        assertEquals(4, first.pageIndex)
+        assertEquals(4, repository.bookmarks("content://first/book").single().pageIndex)
+        assertTrue(repository.deleteCollection("Remove me").not())
+    }
+
+    @Test fun deletedCollectionDoesNotReturnWhenPendingBackupBooksAreMatchedLater() = runBlocking {
+        assertEquals(1, repository.importBackup(backup(), prefs).pendingComics)
+        assertTrue(repository.customCollections().contains("Restored"))
+        assertTrue(repository.deleteCollection("Restored"))
+
+        repository.syncScannedComics(listOf(scanned("content://new/book")), prefs)
+
+        assertTrue(repository.entries().single().customCollections.isEmpty())
+        assertFalse(repository.customCollections().contains("Restored"))
+        assertTrue(repository.customCollections().contains("Empty"))
     }
 
     @Test fun scanRelocatesStateAcrossRepeatedSafTreeChangesAndUsesDiscoveryTime() = runBlocking {
