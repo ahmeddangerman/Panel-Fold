@@ -98,6 +98,28 @@ class NativeUnrarInstrumentedTest {
         }
     }
 
+    @Test
+    fun nativeUnrarCanStageAnEntryDirectlyToDisk() = withNativeFixture("stored-rar4.cbr") { archive ->
+        val target = File(archive.parentFile, "nested-stage-${System.nanoTime()}.zip")
+        try {
+            NativeUnrar.openSession(archive.absolutePath).use { session ->
+                session.extractToFile(
+                    entryOrdinal = 0,
+                    maxOutputBytes = 1024 * 1024,
+                    maxDictionaryBytes = DICTIONARY_LIMIT,
+                    target = target,
+                    cancellationCheck = {},
+                )
+            }
+            assertArrayEquals(
+                InstrumentationRegistry.getInstrumentation().context.assets.open("page.png").use { it.readBytes() },
+                target.readBytes(),
+            )
+        } finally {
+            target.delete()
+        }
+    }
+
     private companion object {
         const val PAGE_LIMIT = 24L * 1024 * 1024
         const val DICTIONARY_LIMIT = 256L * 1024 * 1024

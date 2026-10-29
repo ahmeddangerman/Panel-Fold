@@ -1,6 +1,8 @@
 #include "rar_session.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <fstream>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -25,6 +27,9 @@ struct ReadState {
     bool collect = false;
     bool tooLarge = false;
     bool outOfMemory = false;
+    bool ioError = false;
+    uint64_t outputBytes = 0;
+    std::ofstream* fileOutput = nullptr;
     std::vector<unsigned char> bytes;
 
     bool check() const {
@@ -52,13 +57,23 @@ int callback(UINT message, LPARAM userData, LPARAM first, LPARAM second) {
     // skipped output into the requested page's byte vector.
     if (message != UCM_PROCESSDATA || !state->collect) return 0;
     const auto count = static_cast<size_t>(second);
-    if (count > state->maxPageBytes - std::min<uint64_t>(state->maxPageBytes, state->bytes.size())) {
+    if (count > state->maxPageBytes - std::min<uint64_t>(state->maxPageBytes, state->outputBytes)) {
         state->tooLarge = true;
         return -1;
     }
     const auto* bytes = reinterpret_cast<const unsigned char*>(first);
+    if (state->fileOutput != nullptr) {
+        state->fileOutput->write(reinterpret_cast<const char*>(bytes), static_cast<std::streamsize>(count));
+        if (!*state->fileOutput) {
+            state->ioError = true;
+            return -1;
+        }
+        state->outputBytes += count;
+        return 0;
+    }
     try {
         state->bytes.insert(state->bytes.end(), bytes, bytes + count);
+        state->outputBytes += count;
     } catch (const std::bad_alloc&) {
         state->outOfMemory = true;
         return -1;
@@ -184,6 +199,71 @@ std::vector<unsigned char> RarSession::extract(size_t ordinal, uint64_t maxPageB
     } catch (...) {
         // Interrupted/corrupt decompression must never be resumed with partial
         // dictionary state; the next request opens a clean extraction cursor.
+        reset();
+        throw;
+    }
+}
+
+void RarSession::extractToFile(size_t ordinal, uint64_t maxOutputBytes,
+                               uint64_t maxDictionaryBytes, const std::string& targetPath,
+                               const std::function<bool()>& keepGoing) {
+    std::lock_guard<std::mutex> lock(engineMutex);
+    cancelled.store(false);
+    if (closed.load()) throw RarError("This RAR archive is closed.");
+    if (!keepGoing()) throw RarError("RAR extraction cancelled.");
+    if (ordinal >= kMaxEntries) throw RarError("This nested archive entry is missing.");
+    ErrHandler.Clean();
+    if (ordinal < nextOrdinal || retainedDictionaryBytes > maxDictionaryBytes) reset();
+
+    std::ofstream output(targetPath, std::ios::binary | std::ios::trunc);
+    if (!output) throw RarError("Cannot create temporary storage for this nested archive.");
+    ReadState state{&cancelled, &keepGoing,
+                    std::min<uint64_t>(maxOutputBytes, std::numeric_limits<int32_t>::max()),
+                    maxDictionaryBytes};
+    state.fileOutput = &output;
+    try {
+        if (archive == nullptr) archive = open(path, RAR_OM_EXTRACT);
+        RARSetCallback(archive, callback, reinterpret_cast<LPARAM>(&state));
+        RARSetDictionaryLimit(archive, maxDictionaryBytes);
+        std::vector<wchar_t> name(32768);
+        RARHeaderDataEx header{};
+        int code = ERAR_SUCCESS;
+        bool found = false;
+        while (nextOrdinal <= ordinal) {
+            if (!state.check()) throw RarError("RAR extraction cancelled.");
+            configureHeader(header, name);
+            code = RARReadHeaderEx(archive, &header);
+            if (code != ERAR_SUCCESS) break;
+            state.collect = nextOrdinal == ordinal;
+            const uint64_t size = (static_cast<uint64_t>(header.UnpSizeHigh) << 32) | header.UnpSize;
+            if (state.collect && size > state.maxPageBytes)
+                throw RarError("This nested archive exceeds the app's safe extraction limit.");
+            code = RARProcessFile(archive, state.collect ? RAR_TEST : RAR_SKIP, nullptr, nullptr);
+            if (code != ERAR_SUCCESS) break;
+            if (header.Method != 0x30)
+                retainedDictionaryBytes = std::max<uint64_t>(retainedDictionaryBytes, std::max<uint64_t>(header.DictSize * 1024ULL, 0x40000));
+            ++nextOrdinal;
+            if (state.collect) { found = true; break; }
+        }
+        RARSetCallback(archive, nullptr, 0);
+        if (state.rejectedDictionaryBytes != 0) {
+            RarError error("The RAR dictionary exceeds the current safe memory budget.");
+            error.requiredDictionaryBytes = state.rejectedDictionaryBytes;
+            error.allowedDictionaryBytes = maxDictionaryBytes;
+            throw error;
+        }
+        if (state.tooLarge) throw RarError("This nested archive exceeds the app's safe extraction limit.");
+        if (state.ioError) throw RarError("Could not write the temporary nested archive.");
+        if (!state.check()) throw RarError("RAR extraction cancelled.");
+        if (code != ERAR_SUCCESS || !found)
+            throw RarError("Could not extract this nested RAR entry (UnRAR error " + std::to_string(code) + ").");
+        output.flush();
+        if (!output) throw RarError("Could not write the temporary nested archive.");
+        output.close();
+    } catch (...) {
+        if (archive != nullptr) RARSetCallback(archive, nullptr, 0);
+        output.close();
+        std::remove(targetPath.c_str());
         reset();
         throw;
     }

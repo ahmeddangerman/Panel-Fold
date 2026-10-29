@@ -57,4 +57,22 @@ class ArchiveFormatTest {
         assertTrue(ArchiveLimits.isArchiveSizeAllowed(8L * 1024 * 1024 * 1024))
         assertFalse(ArchiveLimits.isArchiveSizeAllowed(8L * 1024 * 1024 * 1024 + 1))
     }
+
+    @Test fun boundsNestedArchiveDepthAndExpandedStorage() {
+        assertTrue(ArchiveLimits.canDescendIntoNestedArchive(0))
+        assertTrue(ArchiveLimits.canDescendIntoNestedArchive(ArchiveLimits.MAX_NESTED_ARCHIVE_DEPTH - 1))
+        assertFalse(ArchiveLimits.canDescendIntoNestedArchive(ArchiveLimits.MAX_NESTED_ARCHIVE_DEPTH))
+        assertFalse(ArchiveLimits.canDescendIntoNestedArchive(-1))
+        assertEquals(2L * 1024 * 1024 * 1024, ArchiveLimits.MAX_NESTED_ARCHIVE_BYTES)
+        assertEquals(40_000, ArchiveLimits.MAX_TOTAL_ARCHIVE_ENTRIES)
+    }
+
+    @Test fun nestedArchiveNamesRejectTraversalAndHiddenMetadata() {
+        assertTrue(NestedArchiveReader.isSupportedNestedArchiveName("chapters/01.cbz"))
+        assertTrue(NestedArchiveReader.isSupportedNestedArchiveName("chapters\\01.CBR"))
+        assertFalse(NestedArchiveReader.isSupportedNestedArchiveName("../outside.cbz"))
+        assertFalse(NestedArchiveReader.isSupportedNestedArchiveName("/outside.cbz"))
+        assertFalse(NestedArchiveReader.isSupportedNestedArchiveName("__MACOSX/._chapter.cbz"))
+        assertFalse(NestedArchiveReader.isSupportedNestedArchiveName("chapter.pdf"))
+    }
 }

@@ -113,6 +113,25 @@ jbyteArray extract(JNIEnv* env, RarSession& session, jlong ordinal, jlong maxPag
     return result;
 }
 
+void extractToFile(JNIEnv* env, RarSession& session, jlong ordinal, jlong maxOutputBytes,
+                   jlong maxDictionaryBytes, jstring targetPath, jobject cancellationCheck) {
+    jclass functionClass = env->FindClass("kotlin/jvm/functions/Function0");
+    if (functionClass == nullptr) return;
+    jmethodID invoke = env->GetMethodID(functionClass, "invoke", "()Ljava/lang/Object;");
+    if (invoke == nullptr) return;
+    auto check = [env, cancellationCheck, invoke]() {
+        if (env->ExceptionCheck()) return false;
+        jobject ignored = env->CallObjectMethod(cancellationCheck, invoke);
+        if (ignored != nullptr) env->DeleteLocalRef(ignored);
+        return !env->ExceptionCheck();
+    };
+    if (ordinal < 0) throw RarError("This nested archive entry is missing.");
+    session.extractToFile(static_cast<size_t>(ordinal),
+                          static_cast<uint64_t>(std::max<jlong>(0, maxOutputBytes)),
+                          static_cast<uint64_t>(std::max<jlong>(0, maxDictionaryBytes)),
+                          pathString(env, targetPath), check);
+}
+
 // No C++ allocation/error may unwind across a JNI boundary.
 #define JNI_ERRORS(env, value) \
     catch (const RarError& error) { throwError(env, error); return value; } \
@@ -163,6 +182,16 @@ Java_dev_tabletcomics_archive_NativeUnrar_nativeReadSession(JNIEnv* env, jobject
         auto session = findSession(id);
         return extract(env, *session, ordinal, maxPageBytes, maxDictionaryBytes, cancellationCheck);
     } JNI_ERRORS(env, nullptr)
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_tabletcomics_archive_NativeUnrar_nativeWriteSessionToFile(JNIEnv* env, jobject, jlong id,
+        jint ordinal, jlong maxOutputBytes, jlong maxDictionaryBytes, jstring targetPath,
+        jobject cancellationCheck) {
+    try {
+        auto session = findSession(id);
+        extractToFile(env, *session, ordinal, maxOutputBytes, maxDictionaryBytes, targetPath, cancellationCheck);
+    } JNI_ERRORS(env, )
 }
 
 extern "C" JNIEXPORT void JNICALL

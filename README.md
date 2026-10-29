@@ -6,13 +6,14 @@ An offline Android tablet comic and manga reader written in Kotlin and Jetpack C
 
 Open this directory in Android Studio with JDK 17. Install Android SDK Platform 35, NDK 27.2.12479018, and CMake 3.22.1. The Android Gradle Plugin is pinned to 8.7.3, and the Gradle 8.9 wrapper is included. Build the `app` debug variant with `./gradlew :app:assembleDebug` or from Android Studio.
 
-The current source is beta **0.6.7**. [Download the signed APK](https://github.com/ahmeddangerman/Panel-Fold/raw/refs/heads/main/releases/panelflow-0.6.7-beta.apk) or read the [release notes](releases/0.6.7-beta-notes.md). Build/install verification for the previous beta is recorded in [the stabilization results](docs/beta-stabilization-results.md). It targets Android API 35 and supports devices from API 26. MatePad Pro / HarmonyOS behavior has not been verified on a physical device.
+The current source is beta **0.6.8**. [Download the signed APK](https://github.com/ahmeddangerman/Panel-Fold/raw/refs/heads/main/releases/panelflow-0.6.8-beta.apk) or read the [release notes](releases/0.6.8-beta-notes.md). Build/install verification for the previous beta is recorded in [the stabilization results](docs/beta-stabilization-results.md). It targets Android API 35 and supports devices from API 26. MatePad Pro / HarmonyOS behavior has not been verified on a physical device.
 
 ## Features
 
 - Select and retain access to multiple folders through Android's folder picker; remove and refresh sources in Settings.
 - Scan nested folders for CBZ, ZIP, CBR, and RAR archives.
 - Read ZIP/CBZ with Android's ZIP support and RAR/CBR with the native RARLab UnRAR 7.30 beta 1 engine, including RAR5 and RAR7 archives.
+- Open nested ZIP/CBZ and RAR/CBR archives; contained pages are read in natural path order and nested archive data is staged to disk within safe depth and size limits.
 - Reveal ready neighboring pages while dragging with the Photo swipe turn; fast flicks and halfway drags complete naturally, while short drags return. Double-tap zooms in to page width (or 2× when the page already fills the width), and pinch to zoom and pan.
 - Export and restore portable JSON backups of progress, bookmarks, favorites, collections and settings through Android document pickers. Imports validate before merging and defer unmatched comics until their folder is selected.
 - Choose per-comic whole-page/width/height fit, conservative plain-border trimming and zoom retention. Adjust pan sensitivity and momentum in Settings. Original image data is unchanged.

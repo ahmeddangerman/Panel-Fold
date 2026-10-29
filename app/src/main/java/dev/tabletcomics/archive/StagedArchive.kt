@@ -63,6 +63,7 @@ class StagedArchive private constructor(val file: File) : Closeable {
             registerCancellation: ArchiveCancellationRegistrar = ArchiveCancellationRegistrar.NONE,
             maxBytes: Long = ArchiveLimits.MAX_ARCHIVE_BYTES,
             minFreeBytes: Long = ArchiveLimits.MIN_FREE_BYTES,
+            sizeLimitMessage: String = "Comic archive exceeds the 8 GiB limit.",
             availableBytes: () -> Long = { StatFs(directory.path).availableBytes },
             outputFactory: (File) -> OutputStream = ::FileOutputStream,
         ): StagedArchive {
@@ -84,7 +85,7 @@ class StagedArchive private constructor(val file: File) : Closeable {
                                 cancellationCheck()
                                 val count = source.read(buffer)
                                 if (count < 0) break
-                                if (total > maxBytes - count) throw IOException("Comic archive exceeds the 8 GiB limit.")
+                                if (total > maxBytes - count) throw IOException(sizeLimitMessage)
                                 if (availableBytes() - count < minFreeBytes) throw IOException("Not enough free storage to open this comic.")
                                 output.write(buffer, 0, count)
                                 total += count

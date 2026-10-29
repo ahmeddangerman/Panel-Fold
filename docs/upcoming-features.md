@@ -6,8 +6,8 @@ An editable checklist for the next improvements. Check items off as they are com
   - Notes: Beta 0.6.7 adds a confirmation action in Collections. It deletes only the custom grouping and its assignments, including pending backup assignments; comic files, library entries, progress, and the Collections section stay.
 - [x] Make reading progress move right-to-left for manga.
   - Notes: Beta 0.6.7 follows each comic's saved RTL setting on the reader progress line, page slider, and library/Home progress bars.
-- [ ] Support nested archives, such as CBZ files stored inside ZIP or RAR files.
-  - Notes:
+- [x] Support nested archives, such as CBZ files stored inside ZIP or RAR files.
+  - Notes: ZIP/CBZ and RAR/CBR archives can contain other supported comic archives; their pages are indexed in natural path order. Nested entries are staged to private disk storage rather than large heap arrays, with a three-level nesting cap and a 2 GiB total expanded nested-archive limit.
 - [ ] Improve automatic collections from folders.
   - Notes:
 - [ ] Rework the UI after studying other reader apps.

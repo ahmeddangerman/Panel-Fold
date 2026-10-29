@@ -12,10 +12,9 @@ import androidx.compose.runtime.setValue
 import dev.tabletcomics.archive.OpenArchive
 import dev.tabletcomics.archive.ArchiveFormat
 import dev.tabletcomics.archive.ArchiveLimits
-import dev.tabletcomics.archive.RarArchiveReader
+import dev.tabletcomics.archive.NestedArchiveReader
 import dev.tabletcomics.archive.archiveCancellationRegistrar
 import dev.tabletcomics.archive.detectArchiveFormat
-import dev.tabletcomics.archive.ZipArchiveReader
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -120,11 +119,7 @@ class ComicReaderSession(
                         val detectedFormat = detectArchiveFormat(
                             context, uri, format, cancellationCheck, cancellationRegistration,
                         )
-                        unpublished = if (detectedFormat == ArchiveFormat.RAR) {
-                            RarArchiveReader(context).open(uri, cancellationCheck, cancellationRegistration)
-                        } else {
-                            ZipArchiveReader(context).open(uri, cancellationCheck, cancellationRegistration)
-                        }
+                        unpublished = NestedArchiveReader(context, detectedFormat).open(uri, cancellationCheck, cancellationRegistration)
                     }
                 }
                 if (!valid(session, token)) return@launch

@@ -34,6 +34,9 @@ public:
     std::vector<unsigned char> extract(size_t ordinal, uint64_t maxPageBytes,
                                        uint64_t maxDictionaryBytes,
                                        const std::function<bool()>& keepGoing);
+    void extractToFile(size_t ordinal, uint64_t maxOutputBytes,
+                       uint64_t maxDictionaryBytes, const std::string& targetPath,
+                       const std::function<bool()>& keepGoing);
     void cancel();
     void close();
     static std::vector<RarEntry> list(const std::string& path);

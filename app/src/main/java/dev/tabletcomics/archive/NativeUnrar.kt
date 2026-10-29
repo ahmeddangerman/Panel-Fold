@@ -2,6 +2,7 @@ package dev.tabletcomics.archive
 
 import java.io.IOException
 import java.io.Closeable
+import java.io.File
 
 internal data class NativeRarEntry(val name: String, val size: Long, val flags: Int)
 
@@ -44,6 +45,28 @@ internal object NativeUnrar {
             }
         }
 
+        /** Extracts a non-image entry straight to private storage without a large heap array. */
+        fun extractToFile(
+            entryOrdinal: Int,
+            maxOutputBytes: Long,
+            maxDictionaryBytes: Long,
+            target: File,
+            cancellationCheck: () -> Unit,
+            registerCancellation: ArchiveCancellationRegistrar = ArchiveCancellationRegistrar.NONE,
+        ) = synchronized(readLock) {
+            if (closed) throw IOException("This RAR archive is closed.")
+            cancellationCheck()
+            val cancellationHandle = registerCancellation.register(Closeable { nativeCancelSession(handle) })
+            try {
+                cancellationCheck()
+                nativeWriteSessionToFile(
+                    handle, entryOrdinal, maxOutputBytes, maxDictionaryBytes, target.absolutePath, cancellationCheck,
+                )
+            } finally {
+                cancellationHandle.close()
+            }
+        }
+
         @Synchronized
         override fun close() {
             if (closed) return
@@ -76,6 +99,14 @@ internal object NativeUnrar {
         maxDictionaryBytes: Long,
         cancellationCheck: () -> Unit,
     ): ByteArray
+    private external fun nativeWriteSessionToFile(
+        handle: Long,
+        entryOrdinal: Int,
+        maxOutputBytes: Long,
+        maxDictionaryBytes: Long,
+        targetPath: String,
+        cancellationCheck: () -> Unit,
+    )
     private external fun nativeCancelSession(handle: Long)
     private external fun nativeCloseSession(handle: Long)
 

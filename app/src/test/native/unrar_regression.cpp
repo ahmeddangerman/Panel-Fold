@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstdio>
 #include <future>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <thread>
 
@@ -54,6 +56,16 @@ void compressed(const std::string& path) {
     }
     assert(rejected);
     assert(session.extract(0, pageLimit, dictionaryLimit, [] { return true; }) == bytes);
+
+    const std::string stagedPath = path + ".stream-test";
+    std::remove(stagedPath.c_str());
+    RarSession streaming(path);
+    streaming.extractToFile(0, pageLimit, dictionaryLimit, stagedPath, [] { return true; });
+    std::ifstream staged(stagedPath, std::ios::binary);
+    std::vector<unsigned char> stagedBytes((std::istreambuf_iterator<char>(staged)), std::istreambuf_iterator<char>());
+    assert(stagedBytes == bytes);
+    staged.close();
+    std::remove(stagedPath.c_str());
 }
 
 void solid(const std::string& path) {

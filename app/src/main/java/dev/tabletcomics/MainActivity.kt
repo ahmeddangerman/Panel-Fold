@@ -56,9 +56,8 @@ import dev.tabletcomics.archive.ArchiveFormat
 import dev.tabletcomics.archive.ArchiveLimits
 import dev.tabletcomics.archive.ComicPage
 import dev.tabletcomics.archive.OpenArchive
-import dev.tabletcomics.archive.RarArchiveReader
+import dev.tabletcomics.archive.NestedArchiveReader
 import dev.tabletcomics.archive.StagedArchive
-import dev.tabletcomics.archive.ZipArchiveReader
 import dev.tabletcomics.archive.archiveCancellationRegistrar
 import dev.tabletcomics.archive.detectArchiveFormat
 import dev.tabletcomics.library.ComicLibraryEntry
@@ -1272,7 +1271,7 @@ private fun LibraryCollectionCard(
 }
 
 private fun archiveReader(context: android.content.Context, format: ArchiveFormat): ArchiveReader =
-    if (format == ArchiveFormat.RAR) RarArchiveReader(context) else ZipArchiveReader(context)
+    NestedArchiveReader(context, format)
 
 private fun decodePage(
     archive: OpenArchive,

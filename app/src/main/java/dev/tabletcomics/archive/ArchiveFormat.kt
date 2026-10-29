@@ -141,6 +141,10 @@ object ArchiveLimits {
     const val MIN_FREE_BYTES = 1024L * 1024 * 1024
     const val MAX_ENTRIES = 20_000
     const val MAX_PAGES = 20_000
+    /** Bounds recursive archive expansion on disk, independent of the outer archive size. */
+    const val MAX_NESTED_ARCHIVE_DEPTH = 3
+    const val MAX_NESTED_ARCHIVE_BYTES = 2L * 1024 * 1024 * 1024
+    const val MAX_TOTAL_ARCHIVE_ENTRIES = 40_000
     const val MAX_IMAGE_PIXELS = 100_000_000L
     const val MAX_NATIVE_RAR_DICTIONARY_BYTES = 1024L * 1024 * 1024
 
@@ -153,4 +157,7 @@ object ArchiveLimits {
 
     fun nativeRarDictionaryBudget(availableMemoryBytes: Long): Long =
         (availableMemoryBytes.coerceAtLeast(0) / 3).coerceAtMost(MAX_NATIVE_RAR_DICTIONARY_BYTES)
+
+    fun canDescendIntoNestedArchive(nestedDepth: Int): Boolean =
+        nestedDepth in 0 until MAX_NESTED_ARCHIVE_DEPTH
 }
